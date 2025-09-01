@@ -73,6 +73,31 @@ pip install seeact
 playwright install
 ```
 
+## Development & Testing
+
+- Install for local development:
+  ```bash
+  pip install -e seeact_package
+  pip install pytest
+  ```
+- Run smoke tests (no network; Playwright optional):
+  ```bash
+  pytest -m smoke
+  ```
+  The smoke test skips if Playwright isn’t installed.
+- Run OpenAI integration test (requires key):
+  ```bash
+  export OPENAI_API_KEY=sk-...   # PowerShell: $env:OPENAI_API_KEY="sk-..."
+  pytest -m integration
+  ```
+- Run all tests:
+  ```bash
+  pytest
+  ```
+  Integration tests auto‑skip if `OPENAI_API_KEY` is unset.
+
+Contributor guidelines, structure, and conventions are documented in `AGENTS.md`.
+
 ## Usage
 
 
@@ -108,6 +133,16 @@ if __name__ == "__main__":
 | temperature | Termperature passed to LLM | num | 0.9 | no |
 | crawler_mode | Flag to enable crawler mode | bool | False | no |
 | crawler_max_steps | Max step to allow crawler to travel | int | 10 | no |
+
+### Grounding Strategies
+- text_choice_som (default): Uses both screenshot and DOM (with Set‑of‑Mark bounding boxes). Recommended to always run on both.
+- text_choice: DOM only.
+- pixel_2_stage: Screenshot only (pixel coordinate grounding).
+
+Example forcing both screenshot and DOM:
+```python
+agent = SeeActAgent(model="gpt-4o", grounding_strategy="text_choice_som")
+```
 
 
 ## Supported Models
@@ -344,4 +379,13 @@ If you find this work useful, please consider starring our repos and citing our 
   year={2023},
   url={https://openreview.net/forum?id=kiYqbO3wqw}
 }
+```
+
+## Persona CLI
+
+Build YAML personas from GA4 + Shopify cohorts. See `PERSONAS.md` for details.
+
+Quick run:
+```bash
+python src/personas_cli.py -i cohorts.json > personas.yaml
 ```

@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  smoke:
+    name: Smoke tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e seeact_package
+          pip install pytest
+      - name: Run smoke tests
+        run: pytest -m smoke -q
+
+  integration:
+    name: Integration tests (OpenAI)
+    needs: smoke
+    if: ${{ secrets.OPENAI_API_KEY != '' }}
+    runs-on: ubuntu-latest
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Playwright system dependencies and browsers
+        uses: microsoft/playwright-github-action@v1
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e seeact_package
+          pip install pytest
+          python -m pip install playwright
+          python -m playwright install
+      - name: Run integration tests
+        run: pytest -m integration -q
