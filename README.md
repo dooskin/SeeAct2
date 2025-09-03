@@ -91,3 +91,28 @@ cd src && python seeact.py -c config/auto_mode.toml
 - Follow the repo conventions in `AGENTS.md`.
 - Before opening a PR: run demo/auto locally, keep changes scoped, and avoid committing large data or secrets.
 
+## Current Gaps & Roadmap
+
+- Agent rationale: enforce one-sentence rationale and validate. Capture and store it per step in outputs (e.g., `result.jsonl`).
+- Personas & intents: add GA4/Shopify ingest adapters (file/API), input schema docs, persona-driven runs (cohort → tasks/weights), and k-anonymity/privacy toggles.
+- Sandbox + variant patcher: define patch spec (DOM ops, CSS injects, JS hooks); implement network stubs via Playwright routing; add mocked checkout flows; manage variants (apply/revert) and snapshot diffing.
+- Calibration & proxy metrics: instrument funnel events; map agent events → human funnel steps per persona; compute proxy scores (dwell, scroll depth, backtrack, form errors) with thresholds.
+- At-scale runner & metrics sink: worker orchestration with concurrency controls, run IDs/trace IDs, retries/backpressure; structured metrics/logs to a sink (e.g., JSONL/S3/BigQuery/Prometheus/Datadog).
+- AVI bridge: minimal clients and payload schemas for Optimizely/VWO/Kameleoon; gated sampling/ratelimiting; result collection.
+- Reporting: aggregate runs into variant vs control diffs; estimate uplift with uncertainty/error bars; acceptance gates; generate HTML/JSON reports with links to traces and screenshots.
+- Config & docs: extend TOML with `[metrics]`, `[patch]`, `[avi]`, `[report]`; provide sample configs, persona-driven run examples, and patch file examples; add `src/config/README.md`.
+- Testing & observability: unit/integration tests for patcher, network stubs, mocked checkout, calibration, reporting, and the runner; golden fixtures for diffs; structured log schema and dashboards.
+- Architecture hygiene: consolidate on the package agent (`seeact_package/seeact/agent.py`) and keep `src/seeact.py` as a thin CLI wrapper to avoid drift; unify tracing/DOM snapshot behavior.
+
+### Additional Gaps
+
+- Packaging/deps: align `pyproject.toml` and `requirements.txt` with actual imports; add optional extras and lazy-load heavy deps.
+- Docs accuracy: update `AGENTS.md` testing note; replace researchy `default_task` examples with neutral tasks.
+- Ignore patterns: avoid global `*.png`/`*.jpg` ignores; scope to output dirs; ensure all result folders are git-ignored.
+- Agent/browser runtime: honor headless from config; wire persistent context options or adopt a clear policy; unify browser args across helpers.
+- Rate limits/resilience: standardize retries/backoff across engines; reduce blanket exception swallowing and improve error logs.
+- Security/safety: disable CSP bypass and overlays by default; add PII redaction for screenshots/DOM and retention policies.
+- Observability: structured JSON logs with run/trace IDs and fields (step, rationale, action, latency, outcome, error); rotation/retention for artifacts.
+- CI/CD compatibility: align Playwright version between CI and package; handle optional deps in CI or mark tests accordingly.
+- Licensing/branding: confirm license/attribution for platform; update package metadata or clearly denote fork lineage.
+- Features/coverage: add coverage or mark experimental for `pixel_2_stage`; document Shopify field mappings in personas; ensure all CLIs are import-guarded.
