@@ -22,7 +22,6 @@ import asyncio
 from difflib import SequenceMatcher
 from playwright.sync_api import Playwright, expect, sync_playwright
 from pathlib import Path
-import toml
 import os
 import logging
 from aioconsole import ainput, aprint
@@ -503,9 +502,21 @@ def saveconfig(config, save_file):
     if isinstance(save_file, str):
         save_file = Path(save_file)
     if isinstance(config, dict):
-        with open(save_file, 'w') as f:
-            config_without_key = config
-            config_without_key["openai"]["api_key"] = "Your API key here"
-            toml.dump(config_without_key, f)
+        # Mask API key and write TOML if available; fallback to JSON text
+        config_without_key = dict(config)
+        try:
+            if "openai" in config_without_key and isinstance(config_without_key["openai"], dict):
+                config_without_key["openai"]["api_key"] = "Your API key here"
+        except Exception:
+            pass
+        try:
+            import toml as _toml_pkg
+            with open(save_file, 'w', encoding='utf-8') as f:
+                _toml_pkg.dump(config_without_key, f)
+        except Exception:
+            import json
+            with open(save_file, 'w', encoding='utf-8') as f:
+                f.write("# Saved without toml package; JSON fallback\n")
+                json.dump(config_without_key, f, indent=2)
     else:
         os.system(" ".join(["cp", str(config), str(save_file)]))

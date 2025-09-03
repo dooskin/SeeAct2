@@ -27,7 +27,35 @@ import os
 import warnings
 from dataclasses import dataclass
 
-import toml
+# TOML compatibility: prefer stdlib tomllib (Py3.11+), fallback to toml package
+try:
+    import tomllib as _toml_lib  # Python 3.11+
+    def _load_toml(path_or_fp):
+        import io
+        if isinstance(path_or_fp, (str, bytes, os.PathLike)):
+            with open(path_or_fp, 'rb') as f:
+                return _toml_lib.load(f)
+        # Ensure binary file-like for tomllib
+        if hasattr(path_or_fp, 'read') and not isinstance(path_or_fp.read(0), bytes):
+            # Convert text file to binary by reopening
+            if hasattr(path_or_fp, 'name'):
+                with open(path_or_fp.name, 'rb') as f:
+                    return _toml_lib.load(f)
+            raise TypeError('tomllib requires a binary file object')
+        return _toml_lib.load(path_or_fp)
+    _TomlDecodeError = getattr(_toml_lib, 'TOMLDecodeError', Exception)
+except Exception:
+    _toml_lib = None
+    try:
+        import toml as _toml_pkg  # External dependency
+        def _load_toml(path_or_fp):
+            return _toml_pkg.load(path_or_fp)
+        _TomlDecodeError = getattr(_toml_pkg, 'TomlDecodeError', Exception)
+    except Exception:  # No TOML parser available
+        _toml_pkg = None
+        def _load_toml(path_or_fp):
+            raise ImportError("No TOML parser available. Install 'toml' or use Python 3.11+ (tomllib).")
+        _TomlDecodeError = Exception
 import torch
 from aioconsole import ainput, aprint
 from playwright.async_api import async_playwright
@@ -38,7 +66,7 @@ from demo_utils.browser_helper import (normal_launch_async, normal_new_context_a
                                        get_interactive_elements_with_playwright, select_option, saveconfig)
 from demo_utils.format_prompt import format_choices, format_ranking_input, postprocess_action_lmm
 from demo_utils.inference_engine import OpenaiEngine
-from demo_utils.ranking_model import CrossEncoder, find_topk
+# Lazy-import ranking to avoid hard deps on torch when unused
 from demo_utils.website_dict import website_dict
 
 # Remove Huggingface internal warnings
@@ -159,9 +187,11 @@ async def main(config, base_dir) -> None:
 
     # openai settings
     openai_config = config["openai"]
-    if openai_config["api_key"] == "Your API Key Here":
+    # Prefer env var, but allow config override if provided
+    api_key = openai_config.get("api_key") or os.getenv("OPENAI_API_KEY")
+    if not api_key or api_key == "Your API Key Here":
         raise Exception(
-            f"Please set your GPT API key first. (in {os.path.join(base_dir, 'config', 'demo_mode.toml')} by default)")
+            "Missing OpenAI API key. Set OPENAI_API_KEY in your environment or add 'api_key' under [openai] in the config.")
 
     # playwright settings
     save_video = config["playwright"]["save_video"]
@@ -182,13 +212,22 @@ async def main(config, base_dir) -> None:
     trace_sources = config["playwright"]["trace"]["sources"]
 
     # Initialize Inference Engine based on OpenAI API
-    generation_model = OpenaiEngine(**openai_config, )
+    generation_model = OpenaiEngine(api_key=api_key, **{k: v for k, v in openai_config.items() if k != "api_key"})
 
     # Load ranking model for prune candidate elements
     ranking_model = None
     if ranker_path:
-        ranking_model = CrossEncoder(ranker_path, device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-                                     num_labels=1, max_length=512, )
+        try:
+            from demo_utils.ranking_model import CrossEncoder
+            ranking_model = CrossEncoder(
+                ranker_path,
+                device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+                num_labels=1,
+                max_length=512,
+            )
+        except Exception as e:
+            await aprint(f"Ranking model disabled due to import/init error: {e}")
+            ranker_path = None
 
     if not is_demo:
         with open(f'{task_file_path}', 'r', encoding='utf-8') as file:
@@ -352,11 +391,25 @@ async def main(config, base_dir) -> None:
                 if ranker_path and len(elements) > top_k:
                     ranking_input = format_ranking_input(elements, confirmed_task, taken_actions)
                     logger.info("Start to rank")
-                    pred_scores = ranking_model.predict(ranking_input, convert_to_numpy=True, show_progress_bar=False,
-                                                        batch_size=100, )
-                    topk_values, topk_indices = find_topk(pred_scores, k=min(top_k, len(elements)))
-                    all_candidate_ids = list(topk_indices)
-                    ranked_elements = [elements[i] for i in all_candidate_ids]
+                    try:
+                        from demo_utils.ranking_model import find_topk
+                        pred_scores = ranking_model.predict(
+                            ranking_input,
+                            convert_to_numpy=True,
+                            show_progress_bar=False,
+                            batch_size=100,
+                        )
+                        topk_values, topk_indices = find_topk(
+                            pred_scores, k=min(top_k, len(elements))
+                        )
+                    except Exception as e:
+                        logger.info(f"Ranking failed; falling back to all elements: {e}")
+                        ranker_path = None
+                        all_candidate_ids = range(len(elements))
+                        ranked_elements = elements
+                    else:
+                        all_candidate_ids = list(topk_indices)
+                        ranked_elements = [elements[i] for i in all_candidate_ids]
                 else:
 
                     all_candidate_ids = range(len(elements))
@@ -875,13 +928,13 @@ if __name__ == "__main__":
     base_dir = os.path.dirname(os.path.abspath(__file__))
     config = None
     try:
-        with open(os.path.join(base_dir, args.config_path) if not os.path.isabs(args.config_path) else args.config_path,
-                  'r') as toml_config_file:
-            config = toml.load(toml_config_file)
-            print(f"Configuration File Loaded - {os.path.join(base_dir, args.config_path)}")
+        config_path = os.path.join(base_dir, args.config_path) if not os.path.isabs(args.config_path) else args.config_path
+        # Use TOML compat loader
+        config = _load_toml(config_path)
+        print(f"Configuration File Loaded - {config_path}")
     except FileNotFoundError:
         print(f"Error: File '{args.config_path}' not found.")
-    except toml.TomlDecodeError:
+    except _TomlDecodeError:
         print(f"Error: File '{args.config_path}' is not a valid TOML file.")
 
     asyncio.run(main(config, base_dir))

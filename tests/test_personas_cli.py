@@ -1,7 +1,16 @@
 import json
+import sys
 from pathlib import Path
 
-from src.personas_cli import build_personas_yaml
+# Robust import: support running without installing src as a package
+try:
+    from src.personas_cli import build_personas_yaml  # type: ignore
+except ModuleNotFoundError:
+    repo_root = Path(__file__).resolve().parents[1]
+    src_dir = repo_root / "src"
+    if str(src_dir) not in sys.path:
+        sys.path.insert(0, str(src_dir))
+    from personas_cli import build_personas_yaml  # type: ignore
 
 
 def test_personas_yaml_basic(tmp_path: Path):

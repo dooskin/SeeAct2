@@ -1,6 +1,7 @@
 import asyncio
 import os
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -52,6 +53,16 @@ def test_hybrid_integration_screenshot_and_dom(tmp_path):
 
     async def run():
         from playwright.async_api import async_playwright
+        # Ensure required deps exist for integration path
+        pytest.importorskip("backoff")
+        pytest.importorskip("litellm")
+        # Provide toml stub if missing to allow importing seeact without full deps
+        if "toml" not in sys.modules:
+            sys.modules["toml"] = types.SimpleNamespace(
+                load=lambda *a, **k: {},
+                dump=lambda *a, **k: None,
+                TomlDecodeError=Exception,
+            )
         from seeact.agent import SeeActAgent
         from seeact.demo_utils.browser_helper import get_interactive_elements_with_playwright
         from seeact.demo_utils.format_prompt import format_choices
@@ -103,4 +114,3 @@ def test_hybrid_integration_screenshot_and_dom(tmp_path):
             await browser.close()
 
     asyncio.run(run())
-

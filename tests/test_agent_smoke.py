@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import types
 
 
 def _ensure_pkg_path():
@@ -22,6 +23,36 @@ def test_seeact_agent_initialization_and_prompts(monkeypatch, tmp_path):
 
     # Import after ensuring path and skip
     import importlib
+    # Provide a lightweight toml stub if toml isn't installed
+    if "toml" not in sys.modules:
+        sys.modules["toml"] = types.SimpleNamespace(
+            load=lambda *a, **k: {},
+            dump=lambda *a, **k: None,
+            TomlDecodeError=Exception,
+        )
+    # Provide minimal stubs for optional deps to import module without installing all extras
+    if "backoff" not in sys.modules:
+        def _identity_deco(*args, **kwargs):
+            def _wrap(fn):
+                return fn
+            return _wrap
+        sys.modules["backoff"] = types.SimpleNamespace(on_exception=_identity_deco, expo=lambda *a, **k: None)
+    if "dotenv" not in sys.modules:
+        sys.modules["dotenv"] = types.SimpleNamespace(load_dotenv=lambda *a, **k: None)
+    if "openai" not in sys.modules:
+        DummyErr = type("DummyErr", (Exception,), {})
+        sys.modules["openai"] = types.SimpleNamespace(
+            APIConnectionError=DummyErr,
+            APIError=DummyErr,
+            RateLimitError=DummyErr,
+        )
+    if "litellm" not in sys.modules:
+        sys.modules["litellm"] = types.SimpleNamespace(
+            completion=lambda **kwargs: types.SimpleNamespace(choices=[{"message": {"content": "ok"}}]),
+            set_verbose=False,
+        )
+    if "requests" not in sys.modules:
+        sys.modules["requests"] = types.SimpleNamespace(post=lambda **kwargs: types.SimpleNamespace(status_code=200, json=lambda: {"message": {"content": "ok"}}))
     agent_module = importlib.import_module("seeact.agent")
 
     class DummyEngine:
