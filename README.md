@@ -57,6 +57,20 @@ cd src && python seeact.py -c config/auto_mode.toml
 - Auto mode uses `config/auto_mode.toml` with `task_file_path` pointing to a JSON file of tasks.
 - Keep `monitor = true` during development to review each action before execution.
 
+### Runtime: Local vs Browserbase (CDP)
+
+- Set `[runtime].provider` to `local` (default) or `cdp`/`browserbase` to connect over CDP.
+- Provide a CDP/WebSocket endpoint and optional headers. Environment variables are expanded.
+
+Example (Browserbase):
+```toml
+[runtime]
+provider = "browserbase"
+cdp_url = "${BROWSERBASE_CDP_URL}" # e.g., a connect URL provided by Browserbase
+headers = { Authorization = "Bearer ${BROWSERBASE_API_KEY}" }
+```
+- Local mode ignores these and launches Chromium on your machine.
+
 ## Development
 
 - Editable install: `pip install -e seeact_package`.

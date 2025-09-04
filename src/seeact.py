@@ -211,6 +211,17 @@ async def main(config, base_dir) -> None:
     trace_snapshots = config["playwright"]["trace"]["snapshots"]
     trace_sources = config["playwright"]["trace"]["sources"]
 
+    # runtime settings (local vs remote CDP like Browserbase)
+    runtime = config.get("runtime", {}) or {}
+    provider = str(runtime.get("provider", "local")).lower()
+    cdp_url = runtime.get("cdp_url")
+    headers = runtime.get("headers", {}) or {}
+    # Expand env vars in URL and headers
+    if isinstance(cdp_url, str):
+        cdp_url = os.path.expandvars(cdp_url)
+    if isinstance(headers, dict):
+        headers = {k: os.path.expandvars(v) if isinstance(v, str) else v for k, v in headers.items()}
+
     # Initialize Inference Engine based on OpenAI API
     generation_model = OpenaiEngine(api_key=api_key, **{k: v for k, v in openai_config.items() if k != "api_key"})
 
@@ -287,7 +298,26 @@ async def main(config, base_dir) -> None:
         logger.info(f"website: {confirmed_website_url}")
         logger.info(f"task: {confirmed_task}")
         logger.info(f"id: {task_id}")
-        async with async_playwright() as playwright:
+    async with async_playwright() as playwright:
+        # Choose local browser or connect over CDP (e.g., Browserbase)
+        if provider in ("cdp", "browserbase") and cdp_url:
+            session_control.browser = await playwright.chromium.connect_over_cdp(cdp_url, headers=headers)
+            # Prefer an existing context for remote connections
+            if getattr(session_control.browser, "contexts", None):
+                if session_control.browser.contexts:
+                    session_control.context = session_control.browser.contexts[0]
+            if session_control.context is None:
+                session_control.context = await normal_new_context_async(session_control.browser,
+                                                                         tracing=tracing,
+                                                                         storage_state=storage_state,
+                                                                         video_path=main_result_path if save_video else None,
+                                                                         viewport=viewport_size,
+                                                                         trace_screenshots=trace_screenshots,
+                                                                         trace_snapshots=trace_snapshots,
+                                                                         trace_sources=trace_sources,
+                                                                         geolocation=geolocation,
+                                                                         locale=locale)
+        else:
             session_control.browser = await normal_launch_async(playwright)
             session_control.context = await normal_new_context_async(session_control.browser,
                                                                      tracing=tracing,

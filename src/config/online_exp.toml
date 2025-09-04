@@ -43,3 +43,9 @@ viewport.height = 720 # Browser viewport height.
 trace.screenshots = true # Timeline screenshots for reporting/debugging.
 trace.snapshots = true # DOM snapshots enable sandbox/variant patcher and network stubbing analysis.
 trace.sources = true # Include source files in traces for deeper inspection.
+
+[runtime]
+provider = "local" # "local" | "cdp" | "browserbase"
+# For CDP/Browserbase, provide a CDP/WebSocket endpoint and optional headers.
+# cdp_url = "${BROWSERBASE_CDP_URL}"
+# headers = { Authorization = "Bearer ${BROWSERBASE_API_KEY}" }

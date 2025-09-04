@@ -386,14 +386,38 @@ To be successful, it is important to follow the following rules:
 
     async def start(self, headless=None, args=None, website=None):
         self.playwright = await async_playwright().start()
-        self.session_control['browser'] = await normal_launch_async(self.playwright,
-                                                                    headless=self.config['browser'][
-                                                                        'headless'] if headless is None else headless,
-                                                                    args=self.config['browser'][
-                                                                        'args'] if args is None else args)
-        self.session_control['context'] = await normal_new_context_async(self.session_control['browser'],
-                                                                         viewport=self.config['browser'][
-                                                                             'viewport'])
+        # Runtime provider (local vs CDP/browserbase)
+        runtime = self.config.get("runtime", {}) or {}
+        provider = str(runtime.get("provider", "local")).lower()
+        cdp_url = runtime.get("cdp_url")
+        headers = runtime.get("headers", {}) or {}
+        if isinstance(cdp_url, str):
+            cdp_url = os.path.expandvars(cdp_url)
+        if isinstance(headers, dict):
+            headers = {k: os.path.expandvars(v) if isinstance(v, str) else v for k, v in headers.items()}
+
+        if provider in ("cdp", "browserbase") and cdp_url:
+            self.session_control['browser'] = await self.playwright.chromium.connect_over_cdp(cdp_url, headers=headers)
+            # Use an existing remote context if available, otherwise create one
+            ctx = None
+            try:
+                if getattr(self.session_control['browser'], 'contexts', None):
+                    if self.session_control['browser'].contexts:
+                        ctx = self.session_control['browser'].contexts[0]
+            except Exception:
+                ctx = None
+            if ctx is None:
+                ctx = await normal_new_context_async(self.session_control['browser'],
+                                                     viewport=self.config['browser']['viewport'])
+            self.session_control['context'] = ctx
+        else:
+            self.session_control['browser'] = await normal_launch_async(
+                self.playwright,
+                headless=self.config['browser']['headless'] if headless is None else headless,
+                args=self.config['browser']['args'] if args is None else args
+            )
+            self.session_control['context'] = await normal_new_context_async(self.session_control['browser'],
+                                                                             viewport=self.config['browser']['viewport'])
 
         self.session_control['context'].on("page", self.page_on_open_handler)
         await self.session_control['context'].new_page()
