@@ -84,6 +84,30 @@ headers = { Authorization = "Bearer ${BROWSERBASE_API_KEY}" }
 - Guidance: mock network/LLM calls; include smoke tests for `seeact.agent.SeeActAgent` flows.
 - Run tests: `pytest -q`.
 
+### Test Suites
+
+- Smoke (default, fast): `pytest -q -m smoke`
+  - No network; Playwright optional via stubs; validates runtime config and local/remote branches.
+- Integration (OpenAI/Playwright): `pytest -q -m integration`
+  - Requires: `OPENAI_API_KEY`; installs Playwright and browsers.
+- Browserbase/CDP (optional): `pytest -q -m browserbase`
+  - Requires: `BROWSERBASE_CDP_URL`, `BROWSERBASE_API_KEY`.
+
+Examples:
+```bash
+# Quick local signal
+pytest -q -m smoke
+
+# With OpenAI
+export OPENAI_API_KEY=sk-...
+pytest -q -m integration
+
+# With Browserbase/CDP
+export BROWSERBASE_CDP_URL=wss://...  # provided by Browserbase
+export BROWSERBASE_API_KEY=bb_...
+pytest -q -m browserbase
+```
+
 ## Personas & Intents
 
 - Source personas and intents from GA4 and Shopify cohorts; aggregate in a privacy-safe manner.
@@ -104,6 +128,16 @@ headers = { Authorization = "Bearer ${BROWSERBASE_API_KEY}" }
 
 - Follow the repo conventions in `AGENTS.md`.
 - Before opening a PR: run demo/auto locally, keep changes scoped, and avoid committing large data or secrets.
+
+## Backlog (Near Term)
+
+- At-scale runner: async worker pool with `[runner]` config (concurrency, retries, timeouts), structured metrics sink, run IDs.
+- Metrics schema: JSONL sink with per-run and per-step events; add summaries and simple CLI to tail/analyze.
+- Variant patcher: patch spec + apply/revert + snapshot diffs; network stubs; mocked checkout flows.
+- Calibration: funnel instrumentation, proxy-metric scoring, persona-aware baselines and thresholds.
+- AVI bridge: Optimizely/VWO/Kameleoon payloads + sampling + result ingest.
+- CI: optional Browserbase job gated by secrets; keep smoke path fast and deterministic.
+- QA: add tests for runner, metrics schema, patcher spec, and reporting as those features land.
 
 ## Current Gaps & Roadmap
 
