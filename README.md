@@ -139,6 +139,198 @@ pytest -q -m browserbase
 - CI: optional Browserbase job gated by secrets; keep smoke path fast and deterministic.
 - QA: add tests for runner, metrics schema, patcher spec, and reporting as those features land.
 
+## Product Roadmap & TODO (Expanded)
+
+The following outlines the end-state product and near-term build plan. Items marked as planned are not yet implemented in this repo and serve as design targets.
+
+### TL;DR (Design Targets)
+
+- Agents: one-sentence rationale → one tool call per step (selectors > coords) with human-like jiggers (dwell, hesitation, cursor jitter, form-typos).
+- Personas: built from GA4 + Shopify (privacy-safe, k-anon, no PII).
+- Sandbox: DOM snapshot + variant patcher, network stubs, mocked checkout, and objective parity gates.
+- Calibration: fit cohort funnel transition matrices + dwell distributions (JSD/EMD).
+- Scale: Playwright workers; 1k agents ≤ 5 min target; structured logs & dashboard.
+- Decisioning: AVI (mSPRT/test-martingale) tiny live confirms; Optimizely/VWO/Kameleoon clients + dry-run.
+- Reporting: diff viewer, uplift forecast, error bars, acceptance gates.
+- Cost controls: budget caps, model routing (90% small / 10% frontier), token/browser-minute meters.
+
+### What’s New / Changed (Design Targets)
+
+- Privacy hardening: PII redaction, k-anon thresholds, per-merchant KMS, retention defaults.
+- Session-replay hooks: FullStory/Hotjar/Clarity ETL to learn jiggers (pause, velocity, rage-clicks).
+- OPeRA → Chat JSONL: first-class converter with tool-calls (arguments as JSON strings).
+- Sandbox parity gates: selectors/API/latency/visual thresholds that block runs if unmet.
+- AVI math defaults: alpha, min samples, stop bounds; clients dry-run mode.
+- Observability: stable JSON schemas, JSONL sink, minimal dashboard.
+- Edge guards: cookie banners, infinite scroll, iframes/shadow DOM, login/captcha avoidance.
+- Compliance & hygiene: robots/ToS posture, DPIA/DPA notes, locks/seeds for reproducibility.
+- 15-day plan to demo + acceptance criteria.
+
+### Future Quickstart (Design Draft)
+
+Planned CLI surfaces; these commands illustrate the target UX and are not all implemented yet.
+
+```bash
+# 1) Personas (GA4 CSV & Shopify CSV) → cohorts.json
+python -m personas.build_personas --ga4 data/ga4.csv --shopify data/shopify.csv \
+  --out data/personas/cohorts.json --min_k_anon 50
+
+# 2) Snapshot live site & apply a variant patch
+python -m sandbox.snapshot --url https://example.com --out sandbox/site_A/
+python -m sandbox.patcher --apply patches/variant_A.yaml --in sandbox/site_A/ --out sandbox/site_A_varA/
+
+# 3) Parity gates (must pass before runs)
+python -m sandbox.parity --prod_url https://example.com --sandbox sandbox/site_A_varA/ \
+  --thresholds config/sandbox.toml --report reports/parity_A.html
+
+# 4) Run agents @ scale
+python -m runner.pool --start-url http://localhost:7777 --sandbox sandbox/site_A_varA/ \
+  --personas data/personas/cohorts.json --variant A --concurrency 120 --num-agents 1000 \
+  --metrics-dir runs/2025-09-05_A/
+
+# 5) Calibrate (fit to cohort funnels)
+python -m calibration.fit --personas data/personas/cohorts.json \
+  --metrics-dir runs/2025-09-05_A/ --out runs/2025-09-05_A/calibration.json
+
+# 6) Aggregate + report
+python -m reporting.aggregate --runs runs/2025-09-05_A/,runs/2025-09-05_B/ \
+  --out reports/ab_report.html
+```
+
+### Target Repo Layout (Modules to Fill Incrementally)
+
+```
+src/
+  seeact.py
+  config/
+    personas.toml       # thresholds for cohorting & k-anon
+    sandbox.toml        # parity gate thresholds (selectors/API/latency/visual)
+    calibration.toml    # JSD/EMD/CR/Bounce tolerances
+    avi.toml            # alpha, min-samples, tilt, stop bounds
+    report.toml         # acceptance gates, chart toggles
+  personas/
+    ga4_adapter.py      # GA4 → normalized events
+    shopify_adapter.py  # Shopify → normalized events
+    privacy.py          # k-anon, redaction, KMS, retention
+    build_personas.py   # CLI → data/personas/cohorts.json
+  replay/
+    fullstory.py hotjar.py clarity.py
+    features.py         # pause, velocity, rage-clicks → jiggers
+  sandbox/
+    snapshot.py patcher.py netstub.py payments_mock.py parity.py
+  runner/
+    pool.py             # async workers; retries; timeouts; budgets
+  calibration/
+    funnels.py fit.py
+  metrics/
+    schemas.py proxy.py sink_jsonl.py
+  avi/
+    math.py stop_rules.py confirm.py
+    clients/
+      optimizely.py vwo.py kameleoon.py
+  reporting/
+    aggregate.py render.py diff_viewer.py dashboard.py
+prompts/
+  seeact_refinement_prompt.txt
+tools/
+  datasets/opera_to_chat_jsonl.py  # OPeRA parquet → chat JSONL (tools + text-only)
+docs/
+  PERSONAS.md PRIVACY.md DPIA.md
+  stats/AVI.md integrations/optimizely_examples.md
+  compliance/robots_and_tos.md
+scripts/
+  demo_e2e.sh seed.sh
+```
+
+### Personas & Intents (GA4 + Shopify)
+
+- Adapters normalize events (session_start, view_item, add_to_cart, begin_checkout, purchase).
+- Features: source/medium, device, geo (bucketed), new/returning, AOV, pages/session, bounce.
+- Clustering: k-means/HDBSCAN → 6–10 cohorts; add intent priors (browse/search/compare/checkout).
+- Privacy: k-anon checks, field-level redaction, per-merchant KMS, retention config.
+- Output: `data/personas/cohorts.json` consumed by the runner.
+
+### OPeRA → OpenAI Chat JSONL (SFT/Eval)
+
+- CLI: `python tools/datasets/opera_to_chat_jsonl.py --limit 50000 --out data/jsonl/`.
+- Outputs:
+  - `train_tools.jsonl`, `val_tools.jsonl` (assistant tool_calls; arguments as JSON strings)
+  - `train_text.jsonl`, `val_text.jsonl` (assistant replies with a single JSON string)
+
+### Sandbox, Variants & Parity Gates
+
+- Snapshot: Playwright crawl; inline critical assets for determinism.
+- Patcher: YAML ops (CSS inject, text swap, DOM insert/remove); runtime `set_variant(id)` assertion.
+- Net stubs: route/search/catalog/cart/checkout; latency envelopes.
+- Payments: mocked tokenization + success/fail; never call real processors.
+- Parity gates (CI-blocking): selectors/API/latency/visual thresholds to match prod.
+
+### SeeAct Agent (Policy + Tools)
+
+- Tools: `click`, `type`, `scroll`, `navigate`, `wait_for`, `read`, `set_variant`, `snapshot`.
+- Behavior: one-sentence plan → one tool call; prefer semantic selectors; backtrack/retry; jiggers.
+- Output: final JSON with `funnel_path`, `micro_signals`, `proxy_scores`, `abandon_reason`, `step_logs`.
+
+### Calibration & Proxy Metrics
+
+- Targets: funnel transition matrix (JSD), dwell EMD envelope, CR ±2ppt, Bounce ±5ppt.
+- Fitter: tune hesitation/noise/buy-propensity to minimize (JSD + EMD + penalties).
+- Proxies: time-to-PDP/ATC, path efficiency, search/filter usage, backtracks, form errors.
+
+### Scale, Cost & Observability
+
+- Runner: async workers; retries/timeouts; `--concurrency`; per-site rate limits.
+- Cost controls: budgets, 90/10 routing, token & browser-minute meters, simple cache.
+- Logs: JSON schemas with run_id/trace_id; JSONL sink; dashboard later.
+
+### Live Confirmation (AVI) & Integrations
+
+- Math defaults: alpha=0.05, min samples, stop bounds; multi-variant; fallback if underpowered.
+- Clients: Optimizely/VWO/Kameleoon with dry-run validation.
+- Bridge: create tiny-traffic confirms, observe, apply stop rules → `avi_result.jsonl`.
+
+### Reporting & Product Surface
+
+- Aggregate: sandbox proxy scores + AVI outcomes.
+- Diff viewer: DOM/text/CSS diffs & before/after screenshots.
+- Report: HTML with uplift, CIs, pass/fail gates; shareable sandbox link.
+
+### Edge-Case Guards
+
+- Cookie banners/consent, geo-gates, infinite scroll/virtualized lists, shadow DOM, cross-origin iframes, login/captcha avoidance.
+- Central policy in `runtime/guards.py`.
+
+### Security, Compliance & Robots/ToS
+
+- Robots.txt respect in demo; non-destructive actions only.
+- DPIA/DPA notes; PII redaction; per-merchant KMS; retention config (30/90 days defaults).
+- `docs/compliance/robots_and_tos.md` for Shopify/GA4/Optimizely ToS posture.
+
+### End-to-End Demo (One Command, Planned)
+
+```bash
+scripts/demo_e2e.sh \
+  --prod_url https://example.com \
+  --ga4 data/ga4.csv --shopify data/shopify.csv \
+  --variant patches/variant_A.yaml --variant patches/variant_B.yaml \
+  --agents 200 --concurrency 60
+# Outputs: reports/parity_*.html, runs/<id>/*.jsonl, reports/ab_report.html
+```
+
+### Open TODOs (Pre-Demo)
+
+- GA4/Shopify adapters + privacy (k-anon, redaction), KMS, retention.
+- Replay connectors + jigger feature ETL.
+- OPeRA converter → chat JSONL (tool-calls w/ stringified args).
+- Snapshot/patcher/net-stubs/payments-mock + parity gates (CI).
+- Runner pool + metrics schemas + sink.
+- Calibration fitter (JSD/EMD/CR/Bounce) + thresholds.
+- AVI math + clients (dry-run) + bridge.
+- Reporting aggregation + diff viewer + dashboard.
+- Edge guards (cookie banners, virtual lists, iframes, login).
+- Cost controls (caps, routing, meters) + release hygiene (locks, seeds).
+- Compliance docs (DPIA/DPA, robots/ToS).
+
 ## Current Gaps & Roadmap
 
 - Agent rationale: enforce one-sentence rationale and validate. Capture and store it per step in outputs (e.g., `result.jsonl`).
