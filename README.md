@@ -156,6 +156,20 @@ python src/runner.py -c src/config/auto_mode.toml \
 ```
 Metrics: JSONL written under `runs/run_<id>/metrics.jsonl` with `run_start|task_start|task_retry|task_error|task_complete|run_complete` events.
 
+## Recently Shipped
+
+- Runner & Orchestration: async worker pool with retries/timeouts and JSONL metrics.
+  - Code: `src/runner.py`
+  - Config: `[runner]` sections in `src/config/demo_mode.toml`, `src/config/auto_mode.toml`, `src/config/online_exp.toml`
+  - Metrics: `runs/run_<id>/metrics.jsonl`
+  - Make: `make run-runner`
+  - Tests: `tests/test_runner_smoke.py`
+- CDP/Browserbase runtime support for concurrency at scale.
+  - Code: `src/seeact.py` and `seeact_package/seeact/agent.py` (`chromium.connect_over_cdp`)
+  - Config: `[runtime]` in `src/config/*.toml`
+- Default model updated to `gpt-4o` (replaced deprecated `gpt-4-vision-preview`).
+  - Config: `[openai].model` in `src/config/*.toml`
+
 ## Personas & Intents
 
 - Source personas and intents from GA4 and Shopify cohorts; aggregate in a privacy-safe manner.
@@ -179,7 +193,6 @@ Metrics: JSONL written under `runs/run_<id>/metrics.jsonl` with `run_start|task_
 
 ## Backlog (Near Term)
 
-- At-scale runner: async worker pool with `[runner]` config (concurrency, retries, timeouts), structured metrics sink, run IDs.
 - Metrics schema: JSONL sink with per-run and per-step events; add summaries and simple CLI to tail/analyze.
 - Variant patcher: patch spec + apply/revert + snapshot diffs; network stubs; mocked checkout flows.
 - Calibration: funnel instrumentation, proxy-metric scoring, persona-aware baselines and thresholds.
@@ -197,7 +210,7 @@ The following outlines the end-state product and near-term build plan. Items mar
 - Personas: built from GA4 + Shopify (privacy-safe, k-anon, no PII).
 - Sandbox: DOM snapshot + variant patcher, network stubs, mocked checkout, and objective parity gates.
 - Calibration: fit cohort funnel transition matrices + dwell distributions (JSD/EMD).
-- Scale: Playwright workers; 1k agents ≤ 5 min target; structured logs & dashboard.
+ - Scale: Playwright workers; 1k agents ≤ 5 min target; structured logs & dashboard. (Completed: base runner + JSONL metrics; see `src/runner.py`)
 - Decisioning: AVI (mSPRT/test-martingale) tiny live confirms; Optimizely/VWO/Kameleoon clients + dry-run.
 - Reporting: diff viewer, uplift forecast, error bars, acceptance gates.
 - Cost controls: budget caps, model routing (90% small / 10% frontier), token/browser-minute meters.
