@@ -29,6 +29,8 @@ dependencies = [
     "python-dotenv>=1.0",
     "aioconsole>=0.8",
     "lxml>=4.9.3",
+    "beautifulsoup4>=4.12.2",
+    "requests>=2.31.0",
 ]
 
 [project.optional-dependencies]
