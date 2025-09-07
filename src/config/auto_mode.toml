@@ -26,7 +26,7 @@ dev_mode=false # Extra logging/diagnostics.
 [openai]
 # Provider configuration for the SeeAct agent (set keys via env; see README Quick Start).
 rate_limit = -1 # Per-process throttle; set >0 to avoid provider rate-limits.
-model = "gpt-4-vision-preview" # LMM used by the agent; swap as needed.
+model = "gpt-4o" # Default model; 'gpt-4-vision-preview' is deprecated.
 temperature = 0 # Lower = more deterministic, matching “one rationale → one tool call per step”.
 
 [oss_model]

@@ -94,6 +94,12 @@ class OpenaiEngine(Engine):
         self.next_avil_time = [0] * len(self.api_keys)
         self.current_key_idx = 0
         Engine.__init__(self, **kwargs)
+        # Optional verbose logging for troubleshooting
+        try:
+            if os.getenv("SEEACT_LITELLM_VERBOSE", "").strip():
+                litellm.set_verbose = True
+        except Exception:
+            pass
 
     @backoff.on_exception(
         backoff.expo,
