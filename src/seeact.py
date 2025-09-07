@@ -56,7 +56,11 @@ except Exception:
         def _load_toml(path_or_fp):
             raise ImportError("No TOML parser available. Install 'toml' or use Python 3.11+ (tomllib).")
         _TomlDecodeError = Exception
-import torch
+# Optional: torch is only needed when a local ranker is enabled. Defer import to avoid hard dep.
+try:
+    import torch  # type: ignore
+except Exception:  # torch not installed; ranking will be disabled unless provided by env
+    torch = None  # type: ignore
 from aioconsole import ainput, aprint
 from playwright.async_api import async_playwright
 
@@ -230,12 +234,16 @@ async def main(config, base_dir) -> None:
     if ranker_path:
         try:
             from demo_utils.ranking_model import CrossEncoder
-            ranking_model = CrossEncoder(
-                ranker_path,
-                device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-                num_labels=1,
-                max_length=512,
-            )
+            if torch is None:
+                await aprint("Ranking model disabled: 'torch' not installed; proceed without ranker")
+                ranker_path = None
+            else:
+                ranking_model = CrossEncoder(
+                    ranker_path,
+                    device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+                    num_labels=1,
+                    max_length=512,
+                )
         except Exception as e:
             await aprint(f"Ranking model disabled due to import/init error: {e}")
             ranker_path = None

@@ -24,9 +24,14 @@ SeeAct is an engineering-focused platform for building, running, and measuring a
 
 ## Quick Start
 
-1) Create environment
+1) Create environment (choose one; do not stack both)
 ```bash
+# Option A: Conda (recommended)
 conda create -n seeact python=3.11 && conda activate seeact
+
+# Option B: venv
+python -m venv .venv && source .venv/bin/activate
+python -m pip install --upgrade pip
 ```
 
 2) Install the package (editable) and browsers
@@ -48,6 +53,16 @@ cd src && python seeact.py
 5) Run auto mode (batch)
 ```bash
 cd src && python seeact.py -c config/auto_mode.toml
+```
+
+Environment tips:
+- Ensure only one environment is active (Conda or venv). If both are active, Python may not see installed deps.
+- Sanity check: `which python && python -V` then `python -c "import litellm, backoff; print('ok')"`.
+
+Optional dependency (ranker):
+- Torch is only required when enabling a local element ranker. If you set `ranker_path` in config, install CPU torch:
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cpu
 ```
 
 ## Configuration
