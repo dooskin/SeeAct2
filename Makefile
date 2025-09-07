@@ -1,4 +1,4 @@
-.PHONY: setup run-demo run-auto test-smoke test-int
+.PHONY: setup run-demo run-auto run-runner test-smoke test-int
 
 setup:
 	@bash scripts/bootstrap.sh
@@ -14,3 +14,6 @@ test-smoke:
 
 test-int:
 	@pytest -q -m integration
+
+run-runner:
+	@python src/runner.py -c src/config/auto_mode.toml

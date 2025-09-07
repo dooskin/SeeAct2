@@ -49,3 +49,11 @@ provider = "local" # "local" | "cdp" | "browserbase"
 # For CDP/Browserbase, provide a CDP/WebSocket endpoint and optional headers.
 # cdp_url = "${BROWSERBASE_CDP_URL}"
 # headers = { Authorization = "Bearer ${BROWSERBASE_API_KEY}" }
+
+[runner]
+concurrency = 5           # Number of parallel agents
+max_retries = 2           # Per-task retry count
+backoff_base_sec = 1.5    # Exponential backoff base
+backoff_max_sec = 15.0    # Backoff cap per retry
+task_timeout_sec = 180    # Hard timeout per task
+metrics_dir = "../runs"   # JSONL sink base directory

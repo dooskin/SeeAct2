@@ -137,6 +137,25 @@ export BROWSERBASE_API_KEY=bb_...
 pytest -q -m browserbase
 ```
 
+## At-Scale Runner
+
+- Configure `[runner]` and `[runtime]` in your TOML (see `src/config/*.toml`).
+- Prepare a tasks JSON (same shape as `data/online_tasks/sample_tasks.json`).
+
+Run with defaults from config:
+```bash
+python src/runner.py -c src/config/auto_mode.toml
+```
+
+Override at CLI:
+```bash
+python src/runner.py -c src/config/auto_mode.toml \
+  --tasks data/online_tasks/sample_tasks.json \
+  --concurrency 20 \
+  --metrics-dir runs/$(date +%Y%m%d_%H%M%S)
+```
+Metrics: JSONL written under `runs/run_<id>/metrics.jsonl` with `run_start|task_start|task_retry|task_error|task_complete|run_complete` events.
+
 ## Personas & Intents
 
 - Source personas and intents from GA4 and Shopify cohorts; aggregate in a privacy-safe manner.

@@ -49,3 +49,11 @@ provider = "local" # "local" | "cdp" | "browserbase"
 # For CDP/Browserbase, provide a CDP/WebSocket endpoint and optional headers.
 # cdp_url = "${BROWSERBASE_CDP_URL}"
 # headers = { Authorization = "Bearer ${BROWSERBASE_API_KEY}" }
+
+[runner]
+concurrency = 20
+max_retries = 2
+backoff_base_sec = 1.5
+backoff_max_sec = 15.0
+task_timeout_sec = 240
+metrics_dir = "../runs"
