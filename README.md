@@ -34,9 +34,10 @@ python -m venv .venv && source .venv/bin/activate
 python -m pip install --upgrade pip
 ```
 
-2) Install the package (editable) and browsers
+2) Install the package (editable) and browsers (run from repo root)
 ```bash
-pip install -e seeact_package
+python -m pip install -e seeact_package
+python -m pip install playwright
 playwright install
 ```
 
@@ -58,12 +59,25 @@ cd src && python seeact.py -c config/auto_mode.toml
 Environment tips:
 - Ensure only one environment is active (Conda or venv). If both are active, Python may not see installed deps.
 - Sanity check: `which python && python -V` then `python -c "import litellm, backoff; print('ok')"`.
+- Run editable install from the repo root (not from `src/`).
 
 Optional dependency (ranker):
 - Torch is only required when enabling a local element ranker. If you set `ranker_path` in config, install CPU torch:
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 ```
+
+Make targets:
+```bash
+make setup       # installs seeact_package + playwright and browsers
+make run-demo    # cd src && python seeact.py
+make run-auto    # cd src && python seeact.py -c config/auto_mode.toml
+make test-smoke  # pytest -q -m smoke
+make test-int    # pytest -q -m integration
+```
+
+.env usage:
+- Copy `.env.example` to `.env` at repo root and fill keys. The CLI auto-loads `.env` from the repo root.
 
 ## Configuration
 

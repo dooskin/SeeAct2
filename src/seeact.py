@@ -26,6 +26,14 @@ import logging
 import os
 import warnings
 from dataclasses import dataclass
+from pathlib import Path
+
+# Load .env from repo root if available (ergonomics)
+try:
+    from dotenv import load_dotenv  # type: ignore
+    load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env")
+except Exception:
+    pass
 
 # TOML compatibility: prefer stdlib tomllib (Py3.11+), fallback to toml package
 try:
@@ -61,7 +69,14 @@ try:
     import torch  # type: ignore
 except Exception:  # torch not installed; ranking will be disabled unless provided by env
     torch = None  # type: ignore
-from aioconsole import ainput, aprint
+try:
+    from aioconsole import ainput, aprint  # type: ignore
+except Exception:
+    async def ainput(prompt: str = "") -> str:
+        return await asyncio.to_thread(input, prompt)
+
+    async def aprint(*args, **kwargs) -> None:
+        print(*args, **kwargs)
 from playwright.async_api import async_playwright
 
 from data_utils.format_prompt_utils import get_index_from_option_name
