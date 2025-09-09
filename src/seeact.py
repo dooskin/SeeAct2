@@ -85,6 +85,11 @@ from demo_utils.browser_helper import (normal_launch_async, normal_new_context_a
                                        get_interactive_elements_with_playwright, select_option, saveconfig)
 from demo_utils.format_prompt import format_choices, format_ranking_input, postprocess_action_lmm
 from demo_utils.inference_engine import OpenaiEngine
+# Browserbase API client (optional)
+try:
+    from runtime.browserbase_client import resolve_credentials as bb_resolve, create_session as bb_create, close_session as bb_close
+except Exception:
+    bb_resolve = bb_create = bb_close = None  # type: ignore
 # Lazy-import ranking to avoid hard deps on torch when unused
 from demo_utils.website_dict import website_dict
 
@@ -330,9 +335,32 @@ async def main(config, base_dir) -> None:
 
     async with async_playwright() as playwright:
         # Choose local browser or connect over CDP (e.g., Browserbase)
-        if provider in ("cdp", "browserbase") and cdp_url:
+        if provider in ("cdp",) and cdp_url:
             session_control.browser = await playwright.chromium.connect_over_cdp(cdp_url, headers=headers)
             # Prefer an existing context for remote connections
+            if getattr(session_control.browser, "contexts", None):
+                if session_control.browser.contexts:
+                    session_control.context = session_control.browser.contexts[0]
+            if session_control.context is None:
+                session_control.context = await normal_new_context_async(session_control.browser,
+                                                                         tracing=tracing,
+                                                                         storage_state=storage_state,
+                                                                         video_path=main_result_path if save_video else None,
+                                                                         viewport=viewport_size,
+                                                                         trace_screenshots=trace_screenshots,
+                                                                         trace_snapshots=trace_snapshots,
+                                                                         trace_sources=trace_sources,
+                                                                         geolocation=geolocation,
+                                                                         locale=locale)
+        elif provider in ("browserbase",):
+            if bb_create is None:
+                raise RuntimeError("Browserbase runtime requested but client not available. Ensure src/runtime/browserbase_client.py is present and dependencies installed.")
+            pid = runtime.get("project_id") or os.getenv("BROWSERBASE_PROJECT_ID")
+            key = runtime.get("api_key") or os.getenv("BROWSERBASE_API_KEY")
+            api_base = runtime.get("api_base") or os.getenv("BROWSERBASE_API_BASE")
+            project_id, api_key = bb_resolve(pid, key)  # type: ignore
+            ws_url, session_id = bb_create(project_id, api_key, api_base=api_base)  # type: ignore
+            session_control.browser = await playwright.chromium.connect_over_cdp(ws_url)
             if getattr(session_control.browser, "contexts", None):
                 if session_control.browser.contexts:
                     session_control.context = session_control.browser.contexts[0]

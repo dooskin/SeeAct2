@@ -107,9 +107,11 @@ Example (Browserbase):
 ```toml
 [runtime]
 provider = "browserbase"
-cdp_url = "${BROWSERBASE_CDP_URL}" # e.g., a connect URL provided by Browserbase
-headers = { Authorization = "Bearer ${BROWSERBASE_API_KEY}" }
+project_id = "${BROWSERBASE_PROJECT_ID}"  # required
+# Optional: override API base if needed
+# api_base = "https://api.browserbase.com/v1"
 ```
+- Also set `BROWSERBASE_API_KEY` in your environment. The app creates a session via the Browserbase API, retrieves a CDP endpoint, and connects over CDP automatically.
 - Local mode ignores these and launches Chromium on your machine.
 
 ### Models & Fine‑Tunes
