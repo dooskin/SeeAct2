@@ -139,6 +139,7 @@ pytest -q -m browserbase
 
 ## At-Scale Runner
 
+- Best practice for batches: use the runner (concurrent, resilient, observable). Auto mode is sequential and best for quick repros or demos.
 - Configure `[runner]` and `[runtime]` in your TOML (see `src/config/*.toml`).
 - Prepare a tasks JSON (same shape as `data/online_tasks/sample_tasks.json`).
 
@@ -155,6 +156,9 @@ python src/runner.py -c src/config/auto_mode.toml \
   --metrics-dir runs/$(date +%Y%m%d_%H%M%S)
 ```
 Metrics: JSONL written under `runs/run_<id>/metrics.jsonl` with `run_start|task_start|task_retry|task_error|task_complete|run_complete` events.
+
+Note on auto mode:
+- Auto mode skips tasks when outputs exist and `overwrite=false`. If all tasks are skipped, nothing runs. Prefer the runner for batch work.
 
 ## Recently Shipped
 
@@ -174,6 +178,10 @@ Metrics: JSONL written under `runs/run_<id>/metrics.jsonl` with `run_start|task_
 
 - Source personas and intents from GA4 and Shopify cohorts; aggregate in a privacy-safe manner.
 - See `PERSONAS.md` and `src/personas_cli.py` for persona tooling specifics.
+- Neon (GA) adapter:
+  - Build personas directly from your Neon SegmentSnapshot: `python -m personas.build_personas --out data/personas/personas.yaml`
+  - Auth: set `NEON_DATABASE_URL` in `.env` or pass `--dsn`; otherwise, you’ll be prompted (input hidden).
+  - Output feeds the runner via personas weights. Missing rates are currently placeholders until metrics are joined.
 
 ## Security & Safety
 
@@ -194,6 +202,7 @@ Metrics: JSONL written under `runs/run_<id>/metrics.jsonl` with `run_start|task_
 ## Backlog (Near Term)
 
 - Metrics schema: JSONL sink with per-run and per-step events; add summaries and simple CLI to tail/analyze.
+- Adaptive concurrency: supervisor adjusts worker count via AIMD/target-p95; add RPM token buckets and circuit breaker.
 - Variant patcher: patch spec + apply/revert + snapshot diffs; network stubs; mocked checkout flows.
 - Calibration: funnel instrumentation, proxy-metric scoring, persona-aware baselines and thresholds.
 - AVI bridge: Optimizely/VWO/Kameleoon payloads + sampling + result ingest.

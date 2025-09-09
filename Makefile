@@ -1,4 +1,4 @@
-.PHONY: setup run-demo run-auto run-runner test-smoke test-int
+.PHONY: setup run-demo run-auto run-runner test-smoke test-int build-personas
 
 setup:
 	@bash scripts/bootstrap.sh
@@ -17,3 +17,6 @@ test-int:
 
 run-runner:
 	@python src/runner.py -c src/config/auto_mode.toml
+
+build-personas:
+	@python -m personas.build_personas --out data/personas/personas.yaml

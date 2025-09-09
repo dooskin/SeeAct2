@@ -285,6 +285,7 @@ async def main(config, base_dir) -> None:
         task_dict["task_id"] = file_name
         query_tasks.append(task_dict)
 
+    executed_any = False
     for single_query_task in query_tasks:
         confirmed_task = single_query_task["confirmed_task"]
         confirmed_website = single_query_task["website"]
@@ -297,6 +298,7 @@ async def main(config, base_dir) -> None:
 
         if not os.path.exists(main_result_path):
             os.makedirs(main_result_path)
+            executed_any = True
         else:
             await aprint(f"{main_result_path} already exists")
             if not overwrite:
@@ -321,6 +323,11 @@ async def main(config, base_dir) -> None:
         logger.info(f"website: {confirmed_website_url}")
         logger.info(f"task: {confirmed_task}")
         logger.info(f"id: {task_id}")
+    # If nothing to run (e.g., overwrite=false and all outputs exist), exit gracefully
+    if not executed_any and not is_demo:
+        await aprint("No tasks to run: all outputs exist and overwrite=false. Use the runner for batch runs or set overwrite=true.")
+        return
+
     async with async_playwright() as playwright:
         # Choose local browser or connect over CDP (e.g., Browserbase)
         if provider in ("cdp", "browserbase") and cdp_url:
