@@ -150,7 +150,11 @@ class SeeActAgent:
         # for handler in self.logger.handlers:
         #     self.dev_logger.addHandler(handler)
 
-        self.engine = engine_factory(**self.config['openai'])
+        try:
+            self.engine = engine_factory(**self.config['openai'])
+        except Exception:
+            # Allow initialization without API keys; engine will be created at start() if needed
+            self.engine = None
         self.taken_actions = []
 
         if self.config["agent"]["grounding_strategy"] == "pixel_2_stage":
@@ -385,6 +389,12 @@ To be successful, it is important to follow the following rules:
             pass
 
     async def start(self, headless=None, args=None, website=None):
+        if self.engine is None:
+            try:
+                self.engine = engine_factory(**self.config['openai'])
+            except Exception:
+                # Defer engine errors to first use to allow construction under tests without API keys
+                self.engine = None
         self.playwright = await async_playwright().start()
         # Runtime provider (local vs CDP/browserbase)
         runtime = self.config.get("runtime", {}) or {}
