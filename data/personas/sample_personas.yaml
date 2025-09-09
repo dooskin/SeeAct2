@@ -1,0 +1,133 @@
+personas:
+  tommyjohn_mobile_ads_hot:
+    device: mobile
+    source: ads
+    intent: hot
+    buy_propensity: 0.120000
+    dwell_scale: 1.100000
+    backtrack_p: 0.120000
+    form_error_p: 0.060000
+    weight: 0.200000
+  tommyjohn_desktop_organic_warm:
+    device: desktop
+    source: organic
+    intent: warm
+    buy_propensity: 0.070000
+    dwell_scale: 1.000000
+    backtrack_p: 0.180000
+    form_error_p: 0.070000
+    weight: 0.150000
+
+  hijabkart_mobile_social_warm:
+    device: mobile
+    source: social
+    intent: warm
+    buy_propensity: 0.060000
+    dwell_scale: 1.050000
+    backtrack_p: 0.150000
+    form_error_p: 0.080000
+    weight: 0.180000
+  hijabkart_desktop_organic_cold:
+    device: desktop
+    source: organic
+    intent: cold
+    buy_propensity: 0.030000
+    dwell_scale: 0.900000
+    backtrack_p: 0.250000
+    form_error_p: 0.100000
+    weight: 0.120000
+
+  on_mobile_organic_hot:
+    device: mobile
+    source: organic
+    intent: hot
+    buy_propensity: 0.100000
+    dwell_scale: 1.100000
+    backtrack_p: 0.120000
+    form_error_p: 0.050000
+    weight: 0.160000
+  on_desktop_direct_warm:
+    device: desktop
+    source: direct
+    intent: warm
+    buy_propensity: 0.060000
+    dwell_scale: 1.000000
+    backtrack_p: 0.150000
+    form_error_p: 0.060000
+    weight: 0.090000
+
+  bakedcravings_mobile_ads_warm:
+    device: mobile
+    source: ads
+    intent: warm
+    buy_propensity: 0.050000
+    dwell_scale: 1.050000
+    backtrack_p: 0.140000
+    form_error_p: 0.070000
+    weight: 0.090000
+  bakedcravings_desktop_referral_cold:
+    device: desktop
+    source: referral
+    intent: cold
+    buy_propensity: 0.025000
+    dwell_scale: 0.900000
+    backtrack_p: 0.250000
+    form_error_p: 0.110000
+    weight: 0.060000
+
+  kith_mobile_organic_hot:
+    device: mobile
+    source: organic
+    intent: hot
+    buy_propensity: 0.110000
+    dwell_scale: 1.150000
+    backtrack_p: 0.130000
+    form_error_p: 0.050000
+    weight: 0.170000
+  kith_desktop_ads_warm:
+    device: desktop
+    source: ads
+    intent: warm
+    buy_propensity: 0.070000
+    dwell_scale: 1.000000
+    backtrack_p: 0.170000
+    form_error_p: 0.060000
+    weight: 0.090000
+
+  bulletproof_mobile_organic_warm:
+    device: mobile
+    source: organic
+    intent: warm
+    buy_propensity: 0.060000
+    dwell_scale: 1.050000
+    backtrack_p: 0.140000
+    form_error_p: 0.070000
+    weight: 0.120000
+  bulletproof_desktop_direct_cold:
+    device: desktop
+    source: direct
+    intent: cold
+    buy_propensity: 0.030000
+    dwell_scale: 0.950000
+    backtrack_p: 0.220000
+    form_error_p: 0.090000
+    weight: 0.070000
+
+  bajaao_mobile_organic_warm:
+    device: mobile
+    source: organic
+    intent: warm
+    buy_propensity: 0.050000
+    dwell_scale: 1.000000
+    backtrack_p: 0.160000
+    form_error_p: 0.080000
+    weight: 0.120000
+  bajaao_desktop_ads_cold:
+    device: desktop
+    source: ads
+    intent: cold
+    buy_propensity: 0.025000
+    dwell_scale: 0.900000
+    backtrack_p: 0.240000
+    form_error_p: 0.100000
+    weight: 0.070000

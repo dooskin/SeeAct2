@@ -70,20 +70,35 @@ class RunnerConfig:
     metrics_dir: Path = Path("runs")
     config_path: Optional[Path] = None
     tasks_path: Optional[Path] = None
+    verbose: bool = False
 
 
 class JsonlMetricsSink:
-    def __init__(self, base_dir: Path):
+    def __init__(self, base_dir: Path, verbose: bool = False):
         self.base_dir = base_dir
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.path = self.base_dir / "metrics.jsonl"
         self._lock = asyncio.Lock()
+        self.verbose = verbose
 
     async def write(self, record: Dict[str, Any]):
         line = json.dumps(record, ensure_ascii=False)
         async with self._lock:
             with open(self.path, "a", encoding="utf-8") as f:
                 f.write(line + "\n")
+        if self.verbose:
+            # Lightweight console summaries for key events
+            ev = record.get("event")
+            if ev == "run_start":
+                print(f"[run {record.get('run_id')}] start: concurrency={record.get('concurrency')} tasks={record.get('num_tasks')} metrics={self.path}")
+            elif ev == "task_start":
+                print(f"[run {record.get('run_id')}] worker={record.get('worker_id')} start task={record.get('task_id')}")
+            elif ev == "task_complete":
+                print(f"[run {record.get('run_id')}] worker={record.get('worker_id')} done task={record.get('task_id')} steps={record.get('steps')} duration_ms={record.get('duration_ms')}")
+            elif ev == "task_error":
+                print(f"[run {record.get('run_id')}] worker={record.get('worker_id')} error task={record.get('task_id')} {record.get('error')}: {record.get('message')}")
+            elif ev == "run_complete":
+                print(f"[run {record.get('run_id')}] complete. metrics={self.path}")
 
 
 async def run_single_task(task: Dict[str, Any], cfg: Dict[str, Any], run_id: str, worker_id: int, sink: JsonlMetricsSink):
@@ -214,20 +229,35 @@ async def run_pool(config_path: Path, tasks_path: Optional[Path], overrides: Opt
         metrics_dir=Path(runner_cfg.get("metrics_dir", "runs")),
         config_path=config_path,
         tasks_path=tasks_path or Path(cfg.get("experiment", {}).get("task_file_path", "")) if cfg.get("experiment") else None,
+        verbose=bool(runner_cfg.get("verbose", False)),
     )
     if overrides:
         for k, v in overrides.items():
             setattr(rc, k, v)
 
     # load tasks
-    if rc.tasks_path is None or not Path(rc.tasks_path).exists():
-        raise FileNotFoundError(f"Tasks file not found: {rc.tasks_path}")
-    tasks = json.loads(Path(rc.tasks_path).read_text(encoding="utf-8"))
+    # Resolve tasks path:
+    # - If provided via --tasks (explicit), resolve relative to current working directory.
+    # - Otherwise (from config), resolve relative to the project base dir (src/..).
+    if rc.tasks_path is None:
+        raise FileNotFoundError("Tasks file not configured. Pass --tasks or set [experiment].task_file_path in the config.")
+    tasks_path_resolved = Path(rc.tasks_path)
+    if not tasks_path_resolved.is_absolute():
+        if tasks_path is not None:
+            # explicit CLI path: relative to CWD
+            tasks_path_resolved = (Path.cwd() / tasks_path_resolved).resolve()
+        else:
+            # from config: resolve relative to base dir (src)
+            base_dir = config_path.parent.parent.resolve()
+            tasks_path_resolved = (base_dir / tasks_path_resolved).resolve()
+    if not tasks_path_resolved.exists():
+        raise FileNotFoundError(f"Tasks file not found: {tasks_path_resolved}")
+    tasks = json.loads(tasks_path_resolved.read_text(encoding="utf-8"))
 
     # prepare metrics sink with unique run id dir
     run_id = uuid.uuid4().hex[:12]
     out_dir = rc.metrics_dir / f"run_{run_id}"
-    sink = JsonlMetricsSink(out_dir)
+    sink = JsonlMetricsSink(out_dir, verbose=rc.verbose)
 
     # build queue
     queue: asyncio.Queue = asyncio.Queue()
@@ -260,15 +290,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--tasks", help="Path to tasks JSON (overrides config experiment.task_file_path)")
     p.add_argument("--concurrency", type=int, help="Override runner concurrency")
     p.add_argument("--metrics-dir", help="Override metrics directory path")
+    p.add_argument("--verbose", action="store_true", help="Print concise run/task progress to stdout")
     args = p.parse_args(argv)
 
     config_path = Path(args.config)
     tasks_path = Path(args.tasks) if args.tasks else None
-    overrides = {}
+    overrides: Dict[str, Any] = {}
     if args.concurrency:
         overrides["concurrency"] = args.concurrency
     if args.metrics_dir:
         overrides["metrics_dir"] = Path(args.metrics_dir)
+    if args.verbose:
+        overrides["verbose"] = True
 
     asyncio.run(run_pool(config_path, tasks_path, overrides))
     return 0
@@ -276,4 +309,3 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

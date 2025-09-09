@@ -145,7 +145,7 @@ pytest -q -m browserbase
 
 Run with defaults from config:
 ```bash
-python src/runner.py -c src/config/auto_mode.toml
+python src/runner.py -c src/config/auto_mode.toml --verbose
 ```
 
 Override at CLI:

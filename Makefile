@@ -16,7 +16,7 @@ test-int:
 	@pytest -q -m integration
 
 run-runner:
-	@python src/runner.py -c src/config/auto_mode.toml
+	@python src/runner.py -c src/config/auto_mode.toml --verbose
 
 build-personas:
 	@python -m personas.build_personas --out data/personas/personas.yaml
