@@ -46,6 +46,16 @@ playwright install
 export OPENAI_API_KEY=...    # or: export GEMINI_API_KEY=...
 ```
 
+Change model quickly (OpenAI/fine‑tunes)
+- Edit `[openai].model` in a config file to use a different or fine‑tuned model.
+- Example: use `src/config/openai_ft.toml` (pre‑configured placeholder for a fine‑tuned model), then run:
+```bash
+python src/runner.py -c src/config/openai_ft.toml \
+  --tasks data/online_tasks/sample_tasks.json \
+  --concurrency 6 --verbose
+```
+- Tip: for text‑only models (no vision), set `[agent].grounding_strategy = "text_choice"` in the TOML.
+
 4) Run demo mode (interactive)
 ```bash
 cd src && python seeact.py
@@ -101,6 +111,29 @@ cdp_url = "${BROWSERBASE_CDP_URL}" # e.g., a connect URL provided by Browserbase
 headers = { Authorization = "Bearer ${BROWSERBASE_API_KEY}" }
 ```
 - Local mode ignores these and launches Chromium on your machine.
+
+### Models & Fine‑Tunes
+
+- Change model in TOML: edit `[openai].model` in `src/config/*.toml`.
+  - Examples (OpenAI):
+    - `gpt-4o` (default)
+    - `gpt-4o-mini`
+    - Your fine‑tuned ID, e.g., `ft:gpt-4o-mini:org:proj:...`
+- Programmatic override (demo usage):
+```python
+from seeact.agent import SeeActAgent
+agent = SeeActAgent(model="gpt-4o-mini")  # or your fine-tuned model ID
+```
+- Vision vs text‑only:
+  - Many tasks use screenshots (vision). Use a vision‑capable model (e.g., `gpt-4o`, `gpt-4o-mini`, `gemini-1.5-pro-latest`).
+  - If using a text‑only model (e.g., fine‑tuned for DOM choices), set text‑only grounding in TOML:
+    - `[agent] grounding_strategy = "text_choice"`
+- Rate limits: set `[openai].rate_limit` (requests/minute) to avoid 429s when increasing concurrency.
+- Alternate providers:
+  - Gemini: set `GEMINI_API_KEY` and use `gemini-1.5-pro-latest`.
+  - Ollama (local): use `llava` and run an Ollama server with the `llava` model pulled.
+  - If a model family isn’t recognized, add its ID under `[openai].model` (for OpenAI) or switch provider section accordingly.
+
 
 ## Development
 
