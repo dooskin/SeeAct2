@@ -74,6 +74,8 @@ make run-demo    # cd src && python seeact.py
 make run-auto    # cd src && python seeact.py -c config/auto_mode.toml
 make test-smoke  # pytest -q -m smoke
 make test-int    # pytest -q -m integration
+make run-runner  # run at-scale runner with --verbose
+make build-personas  # build personas from Neon into data/personas/personas.yaml
 ```
 
 .env usage:
@@ -156,6 +158,32 @@ python src/runner.py -c src/config/auto_mode.toml \
   --metrics-dir runs/$(date +%Y%m%d_%H%M%S)
 ```
 Metrics: JSONL written under `runs/run_<id>/metrics.jsonl` with `run_start|task_start|task_retry|task_error|task_complete|run_complete` events.
+Tip: use `--verbose` to print a concise progress log to stdout. To follow detailed events:
+```bash
+tail -f runs/run_*/metrics.jsonl
+```
+
+Persona-weighted sampling:
+- Provide personas YAML (e.g., `data/personas/sample_personas.yaml`) via `--personas` or config `[personas].file`.
+- Runner maps persona_ids to sites by prefix (e.g., `tommyjohn_...` → tommyjohn.com) and samples personas by `weight`.
+- Example:
+```bash
+python src/runner.py -c src/config/auto_mode.toml \
+  --tasks data/online_tasks/sample_tasks.json \
+  --personas data/personas/sample_personas.yaml \
+  --concurrency 6 --verbose
+```
+
+Outputs:
+- Metrics JSONL: `--metrics-dir <dir>` controls where `run_<id>/metrics.jsonl` is written (default: `runs/`).
+- Agent artifacts (per task): controlled by `[basic].save_file_dir` in TOML (result.json, screenshots, traces).
+- Example saving to Downloads:
+  - Set in TOML: `[basic] save_file_dir = "/Users/<you>/Downloads/seeact_artifacts"`
+  - CLI for metrics: `--metrics-dir "/Users/<you>/Downloads/seeact_runs"`
+
+Tasks path resolution:
+- If you pass `--tasks`, relative paths resolve from your current working directory.
+- If you rely on `[experiment].task_file_path` in TOML, relative paths resolve from the project base (the folder above `src/`).
 
 Note on auto mode:
 - Auto mode skips tasks when outputs exist and `overwrite=false`. If all tasks are skipped, nothing runs. Prefer the runner for batch work.

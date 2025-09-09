@@ -22,6 +22,9 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
+import random
+import yaml
 
 
 # TOML compatibility: prefer stdlib tomllib (Py3.11+), fallback to toml package
@@ -71,6 +74,7 @@ class RunnerConfig:
     config_path: Optional[Path] = None
     tasks_path: Optional[Path] = None
     verbose: bool = False
+    personas_path: Optional[Path] = None
 
 
 class JsonlMetricsSink:
@@ -92,11 +96,17 @@ class JsonlMetricsSink:
             if ev == "run_start":
                 print(f"[run {record.get('run_id')}] start: concurrency={record.get('concurrency')} tasks={record.get('num_tasks')} metrics={self.path}")
             elif ev == "task_start":
-                print(f"[run {record.get('run_id')}] worker={record.get('worker_id')} start task={record.get('task_id')}")
+                pid = record.get('persona_id')
+                pid_str = f" persona={pid}" if pid else ""
+                print(f"[run {record.get('run_id')}] worker={record.get('worker_id')} start task={record.get('task_id')}{pid_str}")
             elif ev == "task_complete":
-                print(f"[run {record.get('run_id')}] worker={record.get('worker_id')} done task={record.get('task_id')} steps={record.get('steps')} duration_ms={record.get('duration_ms')}")
+                pid = record.get('persona_id')
+                pid_str = f" persona={pid}" if pid else ""
+                print(f"[run {record.get('run_id')}] worker={record.get('worker_id')} done task={record.get('task_id')}{pid_str} steps={record.get('steps')} duration_ms={record.get('duration_ms')}")
             elif ev == "task_error":
-                print(f"[run {record.get('run_id')}] worker={record.get('worker_id')} error task={record.get('task_id')} {record.get('error')}: {record.get('message')}")
+                pid = record.get('persona_id')
+                pid_str = f" persona={pid}" if pid else ""
+                print(f"[run {record.get('run_id')}] worker={record.get('worker_id')} error task={record.get('task_id')}{pid_str} {record.get('error')}: {record.get('message')}")
             elif ev == "run_complete":
                 print(f"[run {record.get('run_id')}] complete. metrics={self.path}")
 
@@ -117,6 +127,7 @@ async def run_single_task(task: Dict[str, Any], cfg: Dict[str, Any], run_id: str
         "task_id": task_id,
         "website": website,
         "confirmed_task": confirmed_task,
+        "persona_id": task.get("_persona_id"),
         "ts": t0,
     })
 
@@ -154,6 +165,7 @@ async def run_single_task(task: Dict[str, Any], cfg: Dict[str, Any], run_id: str
             "duration_ms": int((t1 - t0) * 1000),
             "steps": steps,
             "success": True,
+            "persona_id": task.get("_persona_id"),
             "ts": t1,
         })
     except Exception as e:
@@ -165,6 +177,7 @@ async def run_single_task(task: Dict[str, Any], cfg: Dict[str, Any], run_id: str
             "task_id": task_id,
             "error": type(e).__name__,
             "message": str(e),
+            "persona_id": task.get("_persona_id"),
             "ts": t1,
         })
         # Attempt graceful stop
@@ -209,6 +222,7 @@ async def worker_loop(idx: int, queue: asyncio.Queue, cfg: RunnerConfig, full_cf
                     "delay_sec": delay,
                     "error": type(e).__name__,
                     "message": str(e),
+                    "persona_id": task.get("_persona_id"),
                     "ts": time.time(),
                 })
                 await asyncio.sleep(delay)
@@ -230,6 +244,7 @@ async def run_pool(config_path: Path, tasks_path: Optional[Path], overrides: Opt
         config_path=config_path,
         tasks_path=tasks_path or Path(cfg.get("experiment", {}).get("task_file_path", "")) if cfg.get("experiment") else None,
         verbose=bool(runner_cfg.get("verbose", False)),
+        personas_path=Path((cfg.get("personas", {}) or {}).get("file", "")) if cfg.get("personas") else None,
     )
     if overrides:
         for k, v in overrides.items():
@@ -254,6 +269,62 @@ async def run_pool(config_path: Path, tasks_path: Optional[Path], overrides: Opt
         raise FileNotFoundError(f"Tasks file not found: {tasks_path_resolved}")
     tasks = json.loads(tasks_path_resolved.read_text(encoding="utf-8"))
 
+    # Load personas map if provided (site_key -> list of (id, weight, data))
+    personas_map: Optional[Dict[str, List[Dict[str, Any]]]] = None
+    personas_path = rc.personas_path
+    if overrides and overrides.get("personas_path"):
+        personas_path = Path(overrides["personas_path"])  # type: ignore
+    if personas_path and str(personas_path):
+        pp = personas_path
+        if not pp.is_absolute():
+            # resolve relative to project base
+            base_dir = config_path.parent.parent.resolve()
+            pp = (base_dir / pp).resolve()
+        if pp.exists():
+            data = yaml.safe_load(pp.read_text(encoding="utf-8")) or {}
+            personas_obj = data.get("personas", {}) if isinstance(data, dict) else {}
+            # Build site_key -> weighted list
+            site_map: Dict[str, List[Dict[str, Any]]] = {}
+            for pid, pdata in personas_obj.items():
+                try:
+                    site_key = str(pid).split("_")[0].strip().lower()
+                    weight = float(pdata.get("weight", 0.0) or 0.0)
+                    if weight <= 0:
+                        continue
+                    site_map.setdefault(site_key, []).append({"id": pid, "weight": weight, "data": pdata})
+                except Exception:
+                    continue
+            personas_map = site_map if site_map else None
+
+    def site_key_from_url(url: str) -> str:
+        try:
+            host = urlparse(url if url.startswith("http") else ("https://" + url)).hostname or ""
+            host = host.lower()
+            if host.startswith("www."):
+                host = host[4:]
+            return host.split(".")[0]
+        except Exception:
+            return ""
+
+    def pick_persona_for_task(task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if not personas_map:
+            return None
+        skey = site_key_from_url(str(task.get("website", "")))
+        plist = personas_map.get(skey) or []
+        if not plist:
+            # fallback: sample from all when no site-specific match
+            all_list = [p for v in personas_map.values() for p in v]
+            plist = all_list
+        if not plist:
+            return None
+        weights = [p["weight"] for p in plist]
+        total = sum(weights)
+        if total <= 0:
+            return None
+        norm = [w / total for w in weights]
+        choice = random.choices(plist, weights=norm, k=1)[0]
+        return choice
+
     # prepare metrics sink with unique run id dir
     run_id = uuid.uuid4().hex[:12]
     out_dir = rc.metrics_dir / f"run_{run_id}"
@@ -262,6 +333,11 @@ async def run_pool(config_path: Path, tasks_path: Optional[Path], overrides: Opt
     # build queue
     queue: asyncio.Queue = asyncio.Queue()
     for t in tasks:
+        p = pick_persona_for_task(t)
+        if p:
+            t = dict(t)
+            t["_persona_id"] = p.get("id")
+            t["_persona"] = p.get("data")
         queue.put_nowait(t)
 
     await sink.write({
@@ -290,6 +366,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--tasks", help="Path to tasks JSON (overrides config experiment.task_file_path)")
     p.add_argument("--concurrency", type=int, help="Override runner concurrency")
     p.add_argument("--metrics-dir", help="Override metrics directory path")
+    p.add_argument("--personas", help="Path to personas YAML for weighted sampling (overrides config)")
     p.add_argument("--verbose", action="store_true", help="Print concise run/task progress to stdout")
     args = p.parse_args(argv)
 
@@ -302,6 +379,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         overrides["metrics_dir"] = Path(args.metrics_dir)
     if args.verbose:
         overrides["verbose"] = True
+    if args.personas:
+        overrides["personas_path"] = Path(args.personas)
 
     asyncio.run(run_pool(config_path, tasks_path, overrides))
     return 0

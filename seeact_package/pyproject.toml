@@ -32,6 +32,7 @@ dependencies = [
     "beautifulsoup4>=4.12.2",
     "requests>=2.31.0",
     "psycopg[binary]>=3.2",
+    "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]
