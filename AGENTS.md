@@ -4,16 +4,16 @@
 - `src/seeact/seeact.py`: Package CLI entry (demo/auto modes).
 - `src/seeact/config/*.toml`: Configs for demo, auto, and online experiments.
 - `src/{demo_utils,data_utils,offline_experiments}/`: Runtime helpers and experiment scripts.
-- `seeact_package/seeact/*`: Installable Python package; `pyproject.toml` and `requirements.txt` in `seeact_package/`.
+- `src/seeact/*`: Installable Python package (src/ layout). `pyproject.toml` defines packaging metadata.
 - `data/`: Sample tasks and example artifacts (large files should not be committed).
 - `README.md`, `LICENSE`, `CODE_OF_CONDUCT.md`: Docs and policies.
 
 ## Build, Test, and Development Commands
 - Create env: `conda create -n seeact python=3.11 && conda activate seeact`.
-- Install package (editable): `pip install -e seeact_package`.
+- Install package (editable): `pip install -e .`.
 - Install browsers: `playwright install`.
-- Run demo mode: `python -m seeact.seeact` (uses `seeact/config/demo_mode.toml`).
-- Run auto mode: `python -m seeact.seeact -c seeact/config/auto_mode.toml`.
+- Run demo mode: `python -m seeact.seeact` (uses `src/seeact/config/demo_mode.toml`).
+- Run auto mode: `python -m seeact.seeact -c src/seeact/config/auto_mode.toml`.
 - Set API keys: `export OPENAI_API_KEY=...` (or `GEMINI_API_KEY=...`).
 
 ## Coding Style & Naming Conventions

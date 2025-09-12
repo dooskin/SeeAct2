@@ -10,7 +10,7 @@ run-demo:
 	@python -m seeact.seeact
 
 run-auto:
-	@python -m seeact.seeact -c seeact/config/auto_mode.toml
+	@python -m seeact.seeact -c src/seeact/config/auto_mode.toml
 
 test-smoke:
 	@pytest -q -m smoke
@@ -19,7 +19,7 @@ test-int:
 	@pytest -q -m integration
 
 run-runner:
-	@python -m seeact.runner -c seeact/config/auto_mode.toml --verbose
+	@python -m seeact.runner -c src/seeact/config/auto_mode.toml --verbose
 
 build-personas:
 	@python -m personas.build_personas --out data/personas/personas.yaml

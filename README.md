@@ -16,8 +16,7 @@ SeeAct is an engineering-focused platform for building, running, and measuring a
 
 - `src/seeact/seeact.py`: Main entry point (demo/auto modes).
 - `src/seeact/config/*.toml`: Configs for demo, auto, and online experiments.
-- `src/{demo_utils,data_utils,offline_experiments}/`: Runtime helpers and experiment scripts.
-- `seeact_package/seeact/*`: Installable Python package; `pyproject.toml` and `requirements.txt` in `seeact_package/`.
+- `src/{seeact/demo_utils,seeact/data_utils,offline_experiments}/`: Runtime helpers and experiment scripts.
 - `data/`: Sample tasks and example artifacts (large files should not be committed).
 - `tests/`: Pytest suites (smoke and integration as they are added).
 - `README.md`, `LICENSE`, `CODE_OF_CONDUCT.md`: Docs and policies.
@@ -36,7 +35,7 @@ python -m pip install --upgrade pip
 
 2) Install the package (editable) and browsers (run from repo root)
 ```bash
-python -m pip install -e seeact_package
+python -m pip install -e .
 python -m pip install playwright
 playwright install
 ```
@@ -48,9 +47,9 @@ export OPENAI_API_KEY=...    # or: export GEMINI_API_KEY=...
 
 Change model quickly (OpenAI/fine‑tunes)
 - Edit `[openai].model` in a config file to use a different or fine‑tuned model.
-- Example: use `src/config/openai_ft.toml` (pre‑configured placeholder for a fine‑tuned model), then run:
+- Example: use `src/seeact/config/openai_ft.toml` (pre‑configured placeholder for a fine‑tuned model), then run:
 ```bash
-python -m seeact.runner -c seeact/config/openai_ft.toml \
+python -m seeact.runner -c src/seeact/config/openai_ft.toml \
   --tasks data/online_tasks/sample_tasks.json \
   --concurrency 6 --verbose
 ```
@@ -63,7 +62,7 @@ python -m seeact.seeact
 
 5) Run auto mode (batch)
 ```bash
-python -m seeact.seeact -c config/auto_mode.toml
+python -m seeact.seeact -c src/seeact/config/auto_mode.toml
 ```
 
 Environment tips:
@@ -79,9 +78,9 @@ pip install torch --index-url https://download.pytorch.org/whl/cpu
 
 Make targets:
 ```bash
-make setup       # installs seeact_package + playwright and browsers
+make setup       # installs the package + playwright and browsers
 make run-demo    # python -m seeact.seeact
-make run-auto    # python -m seeact.seeact -c config/auto_mode.toml
+make run-auto    # python -m seeact.seeact -c src/seeact/config/auto_mode.toml
 make test-smoke  # pytest -q -m smoke
 make test-int    # pytest -q -m integration
 make run-runner  # run at-scale runner with --verbose
@@ -94,8 +93,8 @@ make build-personas  # build personas from Neon into data/personas/personas.yaml
 ## Configuration
 
 - All configs are TOML files in `src/seeact/config/`.
-- Demo mode defaults to `seeact/config/demo_mode.toml`.
-- Auto mode uses `config/auto_mode.toml` with `task_file_path` pointing to a JSON file of tasks.
+- Demo mode defaults to `src/seeact/config/demo_mode.toml`.
+- Auto mode uses `src/seeact/config/auto_mode.toml` with `task_file_path` pointing to a JSON file of tasks.
 - Keep `monitor = true` during development to review each action before execution.
 
 ### Runtime: Local vs Browserbase (CDP)
@@ -145,7 +144,7 @@ agent = SeeActAgent(model="gpt-4o-mini")  # or your fine-tuned model ID
 
 ## Development
 
-- Editable install: `pip install -e seeact_package`.
+- Editable install: `pip install -e .`.
 - Primary CLI: `src/seeact/seeact.py` (demo and auto modes).
 - Coding style: Python 3.11, PEP 8, type hints, 4-space indents, ~88 char width.
 - Avoid side effects at import; guard CLIs with `if __name__ == "__main__":`.
@@ -223,12 +222,12 @@ Notes:
 
 Run with defaults from config:
 ```bash
-python -m seeact.runner -c seeact/config/auto_mode.toml --verbose
+python -m seeact.runner -c src/seeact/config/auto_mode.toml --verbose
 ```
 
 Override at CLI:
 ```bash
-python -m seeact.runner -c seeact/config/auto_mode.toml \
+python -m seeact.runner -c src/seeact/config/auto_mode.toml \
   --tasks data/online_tasks/sample_tasks.json \
   --concurrency 20 \
   --metrics-dir runs/$(date +%Y%m%d_%H%M%S)
@@ -244,7 +243,7 @@ Persona-weighted sampling:
 - Runner maps persona_ids to sites by prefix (e.g., `tommyjohn_...` → tommyjohn.com) and samples personas by `weight`.
 - Example:
 ```bash
-python -m seeact.runner -c seeact/config/auto_mode.toml \
+python -m seeact.runner -c src/seeact/config/auto_mode.toml \
   --tasks data/online_tasks/sample_tasks.json \
   --personas data/personas/sample_personas.yaml \
   --concurrency 6 --verbose
@@ -273,7 +272,7 @@ Note on auto mode:
   - Make: `make run-runner`
   - Tests: `tests/test_runner_smoke.py`
 - CDP/Browserbase runtime support for concurrency at scale.
-  - Code: `src/seeact/seeact.py` and `seeact_package/seeact/agent.py` (`chromium.connect_over_cdp`)
+  - Code: `src/seeact/seeact.py` and `src/seeact/agent.py` (`chromium.connect_over_cdp`)
   - Config: `[runtime]` in `src/seeact/config/*.toml`
 - Default model updated to `gpt-4o` (replaced deprecated `gpt-4-vision-preview`).
   - Config: `[openai].model` in `src/seeact/config/*.toml`
@@ -522,7 +521,7 @@ scripts/demo_e2e.sh \
 - Reporting: aggregate runs into variant vs control diffs; estimate uplift with uncertainty/error bars; acceptance gates; generate HTML/JSON reports with links to traces and screenshots.
 - Config & docs: extend TOML with `[metrics]`, `[patch]`, `[avi]`, `[report]`; provide sample configs, persona-driven run examples, and patch file examples; add `src/seeact/config/README.md`.
 - Testing & observability: unit/integration tests for patcher, network stubs, mocked checkout, calibration, reporting, and the runner; golden fixtures for diffs; structured log schema and dashboards.
-- Architecture hygiene: consolidate on the package agent (`seeact_package/seeact/agent.py`) and keep `src/seeact/seeact.py` as a thin CLI wrapper to avoid drift; unify tracing/DOM snapshot behavior.
+- Architecture hygiene: consolidate on the package agent (`src/seeact/agent.py`) and keep `src/seeact/seeact.py` as a thin CLI wrapper to avoid drift; unify tracing/DOM snapshot behavior.
 
 ### Additional Gaps
 

@@ -81,8 +81,9 @@ metrics_dir = "../runs"
     agent_mod = importlib.import_module("seeact.agent")
     monkeypatch.setattr(agent_mod, "SeeActAgent", DummyAgent, raising=True)
 
-    # Import runner and execute
-    from src import runner as runner_mod  # type: ignore
+    # Import runner from the package and execute
+    import importlib
+    runner_mod = importlib.import_module("seeact.runner")
     # Run synchronously
     runner_mod.main(["-c", str(cfg_path), "--tasks", str(tasks_path), "--concurrency", "2", "--metrics-dir", str(tmp_path / "runs")])
 
