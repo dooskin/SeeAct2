@@ -14,8 +14,8 @@ SeeAct is an engineering-focused platform for building, running, and measuring a
 
 ## Repository Structure
 
-- `src/seeact.py`: Main entry point (demo/auto modes).
-- `src/config/*.toml`: Configs for demo, auto, and online experiments.
+- `src/seeact/seeact.py`: Main entry point (demo/auto modes).
+- `src/seeact/config/*.toml`: Configs for demo, auto, and online experiments.
 - `src/{demo_utils,data_utils,offline_experiments}/`: Runtime helpers and experiment scripts.
 - `seeact_package/seeact/*`: Installable Python package; `pyproject.toml` and `requirements.txt` in `seeact_package/`.
 - `data/`: Sample tasks and example artifacts (large files should not be committed).
@@ -50,7 +50,7 @@ Change model quickly (OpenAI/fine‑tunes)
 - Edit `[openai].model` in a config file to use a different or fine‑tuned model.
 - Example: use `src/config/openai_ft.toml` (pre‑configured placeholder for a fine‑tuned model), then run:
 ```bash
-python src/runner.py -c src/config/openai_ft.toml \
+python -m seeact.runner -c seeact/config/openai_ft.toml \
   --tasks data/online_tasks/sample_tasks.json \
   --concurrency 6 --verbose
 ```
@@ -58,12 +58,12 @@ python src/runner.py -c src/config/openai_ft.toml \
 
 4) Run demo mode (interactive)
 ```bash
-cd src && python seeact.py
+python -m seeact.seeact
 ```
 
 5) Run auto mode (batch)
 ```bash
-cd src && python seeact.py -c config/auto_mode.toml
+python -m seeact.seeact -c config/auto_mode.toml
 ```
 
 Environment tips:
@@ -80,8 +80,8 @@ pip install torch --index-url https://download.pytorch.org/whl/cpu
 Make targets:
 ```bash
 make setup       # installs seeact_package + playwright and browsers
-make run-demo    # cd src && python seeact.py
-make run-auto    # cd src && python seeact.py -c config/auto_mode.toml
+make run-demo    # python -m seeact.seeact
+make run-auto    # python -m seeact.seeact -c config/auto_mode.toml
 make test-smoke  # pytest -q -m smoke
 make test-int    # pytest -q -m integration
 make run-runner  # run at-scale runner with --verbose
@@ -93,8 +93,8 @@ make build-personas  # build personas from Neon into data/personas/personas.yaml
 
 ## Configuration
 
-- All configs are TOML files in `src/config/`.
-- Demo mode defaults to `src/config/demo_mode.toml`.
+- All configs are TOML files in `src/seeact/config/`.
+- Demo mode defaults to `seeact/config/demo_mode.toml`.
 - Auto mode uses `config/auto_mode.toml` with `task_file_path` pointing to a JSON file of tasks.
 - Keep `monitor = true` during development to review each action before execution.
 
@@ -111,16 +111,22 @@ project_id = "${BROWSERBASE_PROJECT_ID}"  # required
 # Optional: override API base if needed
 # api_base = "https://api.browserbase.com/v1"
 ```
-- Also set `BROWSERBASE_API_KEY` in your environment. The app creates a session via the Browserbase API, retrieves a CDP endpoint, and connects over CDP automatically.
+- Also set `BROWSERBASE_API_KEY` in your environment. The app creates a session via the Browserbase API, retrieves a CDP endpoint, and connects over CDP automatically. The same multi‑turn loop now runs for `local`, `cdp`, and `browserbase` providers; Browserbase sessions are closed at the end of each run.
 - Local mode ignores these and launches Chromium on your machine.
 
 ### Models & Fine‑Tunes
 
-- Change model in TOML: edit `[openai].model` in `src/config/*.toml`.
+- Change model in TOML: edit `[openai].model` in `src/seeact/config/*.toml`.
   - Examples (OpenAI):
     - `gpt-4o` (default)
     - `gpt-4o-mini`
     - Your fine‑tuned ID, e.g., `ft:gpt-4o-mini:org:proj:...`
+- OpenAI‑compatible backends (GPT‑OSS):
+  - Set a base URL for an OpenAI‑compatible gateway. The engine will accept any model string when a base URL is provided and will use the official OpenAI client against that endpoint.
+  - Env: `export OPENAI_BASE_URL=https://your-gpt-oss.example/v1`
+  - TOML: set `[openai].base_url = "https://your-gpt-oss.example/v1"`
+  - Auth: set `OPENAI_API_KEY` (or `[openai].api_key`).
+  - Multimodal: ensure your gateway supports Chat Completions with image content (we send base64 data: URLs) or disable screenshots and rely on DOM‑only grounding.
 - Programmatic override (demo usage):
 ```python
 from seeact.agent import SeeActAgent
@@ -140,14 +146,14 @@ agent = SeeActAgent(model="gpt-4o-mini")  # or your fine-tuned model ID
 ## Development
 
 - Editable install: `pip install -e seeact_package`.
-- Primary CLI: `src/seeact.py` (demo and auto modes).
+- Primary CLI: `src/seeact/seeact.py` (demo and auto modes).
 - Coding style: Python 3.11, PEP 8, type hints, 4-space indents, ~88 char width.
 - Avoid side effects at import; guard CLIs with `if __name__ == "__main__":`.
 
 ## Testing
 
 - Framework: pytest. Place tests under `tests/` as `test_*.py`.
-- Guidance: mock network/LLM calls; include smoke tests for `seeact.agent.SeeActAgent` flows.
+- Guidance: mock network/LLM calls; include smoke tests for `seeact.agent.SeeActAgent` and CLI flows.
 - Run tests: `pytest -q`.
 
 ### Test Suites
@@ -174,20 +180,55 @@ export BROWSERBASE_API_KEY=bb_...
 pytest -q -m browserbase
 ```
 
+### Testing with GPT‑OSS (OpenAI‑compatible backends)
+
+Requirements:
+- Your GPT‑OSS gateway implements OpenAI Chat Completions v1 and accepts the same `messages` schema.
+- For multimodal tests, the gateway should accept image content via `{ "type": "image_url", "image_url": { "url": "data:image/jpeg;base64,..." } }`.
+
+Setup (choose env or TOML):
+```bash
+# Environment
+export OPENAI_BASE_URL=https://your-gpt-oss.example/v1
+export OPENAI_API_KEY=sk-...
+# (optional) choose your model name; any string is accepted when base_url is set
+export SEEACT_MODEL=your-oss-model
+```
+
+Or in TOML (e.g., `src/seeact/config/demo_mode.toml`):
+```toml
+[openai]
+base_url = "https://your-gpt-oss.example/v1"
+api_key = "${OPENAI_API_KEY}"
+model = "your-oss-model"
+```
+
+Run tests:
+- Smoke (no network): `pytest -q -m smoke`
+- Integration (uses your GPT‑OSS):
+```bash
+pytest -q -m integration \
+  --maxfail=1 -k "openai or cli or agent"
+```
+
+Notes:
+- If your backend does not support image content, prefer smoke tests or ensure your config and prompts avoid screenshots (text‑only grounding). Our default CLI uses screenshot+DOM; multimodal support is recommended.
+- To reduce payload sizes, consider downscaling screenshots or running smoke tests which stub images entirely.
+
 ## At-Scale Runner
 
 - Best practice for batches: use the runner (concurrent, resilient, observable). Auto mode is sequential and best for quick repros or demos.
-- Configure `[runner]` and `[runtime]` in your TOML (see `src/config/*.toml`).
+- Configure `[runner]` and `[runtime]` in your TOML (see `src/seeact/config/*.toml`).
 - Prepare a tasks JSON (same shape as `data/online_tasks/sample_tasks.json`).
 
 Run with defaults from config:
 ```bash
-python src/runner.py -c src/config/auto_mode.toml --verbose
+python -m seeact.runner -c seeact/config/auto_mode.toml --verbose
 ```
 
 Override at CLI:
 ```bash
-python src/runner.py -c src/config/auto_mode.toml \
+python -m seeact.runner -c seeact/config/auto_mode.toml \
   --tasks data/online_tasks/sample_tasks.json \
   --concurrency 20 \
   --metrics-dir runs/$(date +%Y%m%d_%H%M%S)
@@ -203,7 +244,7 @@ Persona-weighted sampling:
 - Runner maps persona_ids to sites by prefix (e.g., `tommyjohn_...` → tommyjohn.com) and samples personas by `weight`.
 - Example:
 ```bash
-python src/runner.py -c src/config/auto_mode.toml \
+python -m seeact.runner -c seeact/config/auto_mode.toml \
   --tasks data/online_tasks/sample_tasks.json \
   --personas data/personas/sample_personas.yaml \
   --concurrency 6 --verbose
@@ -227,15 +268,21 @@ Note on auto mode:
 
 - Runner & Orchestration: async worker pool with retries/timeouts and JSONL metrics.
   - Code: `src/runner.py`
-  - Config: `[runner]` sections in `src/config/demo_mode.toml`, `src/config/auto_mode.toml`, `src/config/online_exp.toml`
+  - Config: `[runner]` sections in `src/seeact/config/demo_mode.toml`, `src/seeact/config/auto_mode.toml`, `src/seeact/config/online_exp.toml`
   - Metrics: `runs/run_<id>/metrics.jsonl`
   - Make: `make run-runner`
   - Tests: `tests/test_runner_smoke.py`
 - CDP/Browserbase runtime support for concurrency at scale.
-  - Code: `src/seeact.py` and `seeact_package/seeact/agent.py` (`chromium.connect_over_cdp`)
-  - Config: `[runtime]` in `src/config/*.toml`
+  - Code: `src/seeact/seeact.py` and `seeact_package/seeact/agent.py` (`chromium.connect_over_cdp`)
+  - Config: `[runtime]` in `src/seeact/config/*.toml`
 - Default model updated to `gpt-4o` (replaced deprecated `gpt-4-vision-preview`).
-  - Config: `[openai].model` in `src/config/*.toml`
+  - Config: `[openai].model` in `src/seeact/config/*.toml`
+ - OpenAI client: switched gpt‑4o path to the official OpenAI Python client for quieter, predictable behavior.
+ - Unified loop across providers: The same multi‑turn interaction loop now executes for `local`, `cdp`, and `browserbase` runtimes (including auto‑dismiss of overlays and DOM‑augmented choices).
+
+### New Tests
+
+- Shopping flow smoke: `tests/test_shopping_flow_smoke.py` simulates a Google → site → click → terminate journey with deterministic model stubs. Runs offline and validates multi‑turn behavior end‑to‑end.
 
 ## Personas & Intents
 
@@ -473,9 +520,9 @@ scripts/demo_e2e.sh \
 - At-scale runner & metrics sink: worker orchestration with concurrency controls, run IDs/trace IDs, retries/backpressure; structured metrics/logs to a sink (e.g., JSONL/S3/BigQuery/Prometheus/Datadog).
 - AVI bridge: minimal clients and payload schemas for Optimizely/VWO/Kameleoon; gated sampling/ratelimiting; result collection.
 - Reporting: aggregate runs into variant vs control diffs; estimate uplift with uncertainty/error bars; acceptance gates; generate HTML/JSON reports with links to traces and screenshots.
-- Config & docs: extend TOML with `[metrics]`, `[patch]`, `[avi]`, `[report]`; provide sample configs, persona-driven run examples, and patch file examples; add `src/config/README.md`.
+- Config & docs: extend TOML with `[metrics]`, `[patch]`, `[avi]`, `[report]`; provide sample configs, persona-driven run examples, and patch file examples; add `src/seeact/config/README.md`.
 - Testing & observability: unit/integration tests for patcher, network stubs, mocked checkout, calibration, reporting, and the runner; golden fixtures for diffs; structured log schema and dashboards.
-- Architecture hygiene: consolidate on the package agent (`seeact_package/seeact/agent.py`) and keep `src/seeact.py` as a thin CLI wrapper to avoid drift; unify tracing/DOM snapshot behavior.
+- Architecture hygiene: consolidate on the package agent (`seeact_package/seeact/agent.py`) and keep `src/seeact/seeact.py` as a thin CLI wrapper to avoid drift; unify tracing/DOM snapshot behavior.
 
 ### Additional Gaps
 

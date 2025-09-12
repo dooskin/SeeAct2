@@ -63,7 +63,7 @@ async def test_runtime_cdp_env_expansion_and_connect(monkeypatch, tmp_path):
     # Import agent after stubbing
     from pathlib import Path
     repo_root = Path(__file__).resolve().parents[1]
-    pkg_root = repo_root / "seeact_package"
+    pkg_root = repo_root / "src"
     if str(pkg_root) not in sys.path:
         sys.path.insert(0, str(pkg_root))
     from seeact.agent import SeeActAgent  # type: ignore

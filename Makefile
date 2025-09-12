@@ -1,13 +1,16 @@
 .PHONY: setup run-demo run-auto run-runner test-smoke test-int build-personas
 
 setup:
-	@bash scripts/bootstrap.sh
+	python -m pip install --upgrade pip
+	python -m pip install -e .
+	python -m pip install playwright
+	playwright install
 
 run-demo:
-	@cd src && python seeact.py
+	@python -m seeact.seeact
 
 run-auto:
-	@cd src && python seeact.py -c config/auto_mode.toml
+	@python -m seeact.seeact -c seeact/config/auto_mode.toml
 
 test-smoke:
 	@pytest -q -m smoke
@@ -16,7 +19,7 @@ test-int:
 	@pytest -q -m integration
 
 run-runner:
-	@python src/runner.py -c src/config/auto_mode.toml --verbose
+	@python -m seeact.runner -c seeact/config/auto_mode.toml --verbose
 
 build-personas:
 	@python -m personas.build_personas --out data/personas/personas.yaml

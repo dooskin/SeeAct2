@@ -74,11 +74,11 @@ metrics_dir = "../runs"
         async def stop(self):
             return None
 
-    pkg_root = Path(__file__).resolve().parents[1] / "seeact_package"
+    pkg_root = Path(__file__).resolve().parents[1] / "src"
     if str(pkg_root) not in sys.path:
         sys.path.insert(0, str(pkg_root))
     import importlib
-    agent_mod = importlib.import_module("seeact.seeact.agent") if False else importlib.import_module("seeact_package.seeact.agent")
+    agent_mod = importlib.import_module("seeact.agent")
     monkeypatch.setattr(agent_mod, "SeeActAgent", DummyAgent, raising=True)
 
     # Import runner and execute
@@ -91,4 +91,3 @@ metrics_dir = "../runs"
     assert run_dirs, "No run directory created"
     metrics_files = [p / "metrics.jsonl" for p in run_dirs]
     assert any(m.exists() and m.stat().st_size > 0 for m in metrics_files)
-

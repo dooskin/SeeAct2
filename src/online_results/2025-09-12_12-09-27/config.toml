@@ -1,0 +1,55 @@
+[basic]
+is_demo = true
+save_file_dir = "../online_results"
+default_task = "Find pdf of paper \"GPT-4V(ision) is a Generalist Web Agent, if Grounded\" from arXiv"
+default_website = "https://www.google.com/"
+
+[experiment]
+task_file_path = "../data/online_tasks/sample_tasks.json"
+overwrite = false
+top_k = 50
+fixed_choice_batch_size = 17
+dynamic_choice_batch_size = 1600
+max_continuous_no_op = 2
+max_op = 20
+highlight = false
+monitor = true
+dev_mode = false
+include_dom_in_choices = true
+
+[openai]
+rate_limit = -1
+model = "gpt-4o"
+temperature = 0
+api_key = "Your API key here"
+
+[oss_model]
+
+[playwright]
+save_video = false
+tracing = false
+locale = "en-US"
+
+[runtime]
+provider = "local"
+
+[runner]
+concurrency = 5
+max_retries = 2
+backoff_base_sec = 1.5
+backoff_max_sec = 15.0
+task_timeout_sec = 180
+metrics_dir = "../runs"
+
+[playwright.geolocation]
+longitude = 39.99542778404405
+latitude = -83.0068669912263
+
+[playwright.viewport]
+width = 1280
+height = 720
+
+[playwright.trace]
+screenshots = true
+snapshots = true
+sources = true

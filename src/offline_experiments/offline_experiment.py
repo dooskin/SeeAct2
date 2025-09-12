@@ -76,7 +76,7 @@ for action_file in os.listdir(source_data_path):
             prompt=prompt_list,
             image_path=image_path,
             turn_number=1,
-            ouput__0=output0
+            ouput_0=output0
         )
 
         print(prompt_list[2])

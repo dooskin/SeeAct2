@@ -52,7 +52,7 @@ async def test_runtime_local_calls_local_launch(monkeypatch, tmp_path):
     # Import agent after stubbing
     from pathlib import Path
     repo_root = Path(__file__).resolve().parents[1]
-    pkg_root = repo_root / "seeact_package"
+    pkg_root = repo_root / "src"
     if str(pkg_root) not in sys.path:
         sys.path.insert(0, str(pkg_root))
     import importlib
