@@ -334,6 +334,7 @@ async def main(config, base_dir) -> None:
         
         # Unified interaction loop for all providers (local, cdp, browserbase)
         async def interaction_loop():
+            nonlocal ranker_path
             taken_actions = []
             complete_flag = False
             monitor_signal = ""
@@ -502,7 +503,8 @@ async def main(config, base_dir) -> None:
                 logger.info(f"batch size: {step_length}")
                 logger.info('-' * 10)
 
-                total_width = session_control.active_page.viewport_size["width"]
+                _vw = session_control.active_page.viewport_size or viewport_size
+                total_width = _vw["width"]
                 log_task = "You are asked to complete the following task: " + confirmed_task
                 logger.info(log_task)
                 previous_actions = taken_actions
@@ -516,9 +518,14 @@ async def main(config, base_dir) -> None:
                 logger.info(previous_action_text)
                 logger.info('-' * 10)
                 logger.info("Start Multi-Choice QA - Batch 0")
+                # Initialize per-step action targets to avoid UnboundLocalError
                 new_action = ""
                 got_one_answer = False
                 query_count = 0
+                target_element = []
+                target_element_text = ""
+                target_action = ""
+                target_value = ""
 
                 for multichoice_i in range(0, len(all_candidate_ids), step_length):
                     if got_one_answer:
@@ -737,7 +744,7 @@ async def main(config, base_dir) -> None:
                         raise Exception(f"no executable operations for {max_continuous_no_op} times.")
                     elif time_step >= max_op:
                         raise Exception(f"the agent reached the step limit {max_op}.")
-                    elif target_action == "TERMINATE":
+                    elif got_one_answer and target_action == "TERMINATE":
                         raise Exception("The model determined a completion.")
 
                     selector = None
@@ -959,14 +966,27 @@ async def main(config, base_dir) -> None:
                                                                          locale=locale)
             # Run unified loop for CDP provider
             session_control.context.on("page", page_on_open_handler)
-            if not session_control.context.pages:
-                await session_control.context.new_page()
+            pages = session_control.context.pages
+            if pages:
+                page = pages[-1]
+            else:
+                page = await session_control.context.new_page()
             try:
-                await session_control.active_page.goto(confirmed_website_url, wait_until="load")
+                await page_on_open_handler(page)
+            except Exception:
+                pass
+            try:
+                # Ensure viewport is set when connecting over CDP (can be None by default)
+                try:
+                    if not page.viewport_size:
+                        await page.set_viewport_size(viewport_size)
+                except Exception:
+                    pass
+                await page.goto(confirmed_website_url, wait_until="domcontentloaded", timeout=30000)
             except Exception as e:
                 logger.info("Failed to fully load the webpage before timeout")
                 logger.info(e)
-            await asyncio.sleep(3)
+            await asyncio.sleep(1)
             await interaction_loop()
         elif provider in ("browserbase",):
             if bb_create is None:
@@ -994,14 +1014,26 @@ async def main(config, base_dir) -> None:
                                                                          locale=locale)
             # Run unified loop for Browserbase provider
             session_control.context.on("page", page_on_open_handler)
-            if not session_control.context.pages:
-                await session_control.context.new_page()
+            pages = session_control.context.pages
+            if pages:
+                page = pages[-1]
+            else:
+                page = await session_control.context.new_page()
             try:
-                await session_control.active_page.goto(confirmed_website_url, wait_until="load")
+                await page_on_open_handler(page)
+            except Exception:
+                pass
+            try:
+                try:
+                    if not page.viewport_size:
+                        await page.set_viewport_size(viewport_size)
+                except Exception:
+                    pass
+                await page.goto(confirmed_website_url, wait_until="domcontentloaded", timeout=30000)
             except Exception as e:
                 logger.info("Failed to fully load the webpage before timeout")
                 logger.info(e)
-            await asyncio.sleep(3)
+            await asyncio.sleep(1)
             await interaction_loop()
             try:
                 if bb_close is not None and bb_session_id:
@@ -1022,13 +1054,22 @@ async def main(config, base_dir) -> None:
                                                                      geolocation=geolocation,
                                                                      locale=locale)
             session_control.context.on("page", page_on_open_handler)
-            await session_control.context.new_page()
+            page = await session_control.context.new_page()
             try:
-                await session_control.active_page.goto(confirmed_website_url, wait_until="load")
+                await page_on_open_handler(page)
+            except Exception:
+                pass
+            try:
+                try:
+                    if not page.viewport_size:
+                        await page.set_viewport_size(viewport_size)
+                except Exception:
+                    pass
+                await page.goto(confirmed_website_url, wait_until="domcontentloaded", timeout=30000)
             except Exception as e:
                 logger.info("Failed to fully load the webpage before timeout")
                 logger.info(e)
-            await asyncio.sleep(3)
+            await asyncio.sleep(1)
 
             taken_actions = []
             complete_flag = False
@@ -1205,7 +1246,8 @@ async def main(config, base_dir) -> None:
                 logger.info(f"batch size: {step_length}")
                 logger.info('-' * 10)
 
-                total_width = session_control.active_page.viewport_size["width"]
+                _vw = session_control.active_page.viewport_size or viewport_size
+                total_width = _vw["width"]
                 log_task = "You are asked to complete the following task: " + confirmed_task
                 logger.info(log_task)
                 previous_actions = taken_actions
