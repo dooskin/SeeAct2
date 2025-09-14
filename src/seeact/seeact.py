@@ -27,6 +27,7 @@ import os
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
+import time
 
 # Load .env from repo root if available (ergonomics)
 try:
@@ -187,6 +188,8 @@ async def main(config, base_dir) -> None:
             ranker_path = None
     except:
         pass
+    # Use a boolean flag to control ranking; avoid mutating the path value later
+    ranker_enabled = bool(ranker_path)
 
     save_file_dir = os.path.join(base_dir, config["basic"]["save_file_dir"]) if not os.path.isabs(
         config["basic"]["save_file_dir"]) else config["basic"]["save_file_dir"]
@@ -254,12 +257,12 @@ async def main(config, base_dir) -> None:
 
     # Load ranking model for prune candidate elements
     ranking_model = None
-    if ranker_path:
+    if ranker_enabled:
         try:
             from seeact.demo_utils.ranking_model import CrossEncoder
             if torch is None:
                 await aprint("Ranking model disabled: 'torch' not installed; proceed without ranker")
-                ranker_path = None
+                ranker_enabled = False
             else:
                 ranking_model = CrossEncoder(
                     ranker_path,
@@ -269,7 +272,7 @@ async def main(config, base_dir) -> None:
                 )
         except Exception as e:
             await aprint(f"Ranking model disabled due to import/init error: {e}")
-            ranker_path = None
+            ranker_enabled = False
 
     if not is_demo:
         with open(f'{task_file_path}', 'r', encoding='utf-8') as file:
@@ -334,13 +337,17 @@ async def main(config, base_dir) -> None:
         
         # Unified interaction loop for all providers (local, cdp, browserbase)
         async def interaction_loop():
-            nonlocal ranker_path
+            nonlocal ranker_enabled
             taken_actions = []
             complete_flag = False
             monitor_signal = ""
             time_step = 0
             no_op_count = 0
             valid_op_count = 0
+            # Repeat/no-progress guard state
+            last_url: str | None = None
+            last_target_key: str | None = None
+            repeat_clicks: int = 0
 
             while not complete_flag:
                 if dev_mode:
@@ -361,6 +368,9 @@ async def main(config, base_dir) -> None:
 
                 # Collect interactive elements. The helper returns dict-shaped entries.
                 # Pass viewport to avoid empty results due to None in normalization math.
+                # Measure element scan time
+                t_scan_start = time.time()
+                t_scan_start = time.time()
                 try:
                     raw_elements = await get_interactive_elements_with_playwright(
                         session_control.active_page, viewport_size
@@ -370,6 +380,8 @@ async def main(config, base_dir) -> None:
                     raw_elements = await get_interactive_elements_with_playwright(
                         session_control.active_page
                     )
+                t_scan_ms = int((time.time() - t_scan_start) * 1000)
+                t_scan_ms = int((time.time() - t_scan_start) * 1000)
                 # Adapt to legacy list/tuple structure expected by this CLI loop:
                 # [center_point, description, tag_with_role, box_model, selector, real_tag_name]
                 if raw_elements and isinstance(raw_elements[0], dict):
@@ -386,6 +398,25 @@ async def main(config, base_dir) -> None:
                     ]
                 else:
                     elements = raw_elements
+
+                # Coverage diagnostics (rough counts)
+                try:
+                    price_inputs = sum(1 for el in (raw_elements or []) if (
+                        (el.get("tag") in ("input", "textarea")) and any(k in (el.get("description") or "").lower() for k in ("price", "min", "max"))
+                    ))
+                    sliders = sum(1 for el in (raw_elements or []) if 'role="slider"' in (el.get("tag_with_role") or ""))
+                    size_controls = sum(1 for el in (raw_elements or []) if (
+                        (el.get("tag") in ("button", "label", "a")) and any(s in (el.get("description") or "").lower() for s in ("size", "us 10", "10"))
+                    ))
+                    sort_controls = sum(1 for el in (raw_elements or []) if (
+                        (el.get("tag") == "select") or ("role=\"option\"" in (el.get("tag_with_role") or "")) or ("Options:" in (el.get("description") or ""))
+                    ))
+                    product_cards = sum(1 for el in (raw_elements or []) if (
+                        (el.get("tag") in ("a", "div", "span")) and ("alt=\"" in (el.get("outer_html") or "") or "title=\"" in (el.get("outer_html") or ""))
+                    ))
+                    logger.info(f"coverage: scan_ms={t_scan_ms} price_inputs={price_inputs} sliders={sliders} size_controls={size_controls} sort_controls={sort_controls} product_cards={product_cards}")
+                except Exception:
+                    pass
 
                 if tracing:
                     await session_control.context.tracing.start_chunk(title=f'{task_id}-Time Step-{time_step}',
@@ -449,7 +480,7 @@ async def main(config, base_dir) -> None:
                 except Exception:
                     include_dom_in_choices = False
 
-                if ranker_path and len(elements) > top_k:
+                if ranker_enabled and len(elements) > top_k:
                     ranking_input = format_ranking_input(elements, confirmed_task, taken_actions)
                     logger.info("Start to rank")
                     try:
@@ -465,7 +496,7 @@ async def main(config, base_dir) -> None:
                         )
                     except Exception as e:
                         logger.info(f"Ranking failed; falling back to all elements: {e}")
-                        ranker_path = None
+                        ranker_enabled = False
                         all_candidate_ids = range(len(elements))
                         ranked_elements = elements
                     else:
@@ -485,7 +516,7 @@ async def main(config, base_dir) -> None:
 
                 all_candidate_ids = [element_id[0] for element_id in all_candidate_ids_with_location]
                 num_choices = len(all_candidate_ids)
-                if ranker_path:
+                if ranker_enabled:
                     logger.info(f"# element candidates: {num_choices}")
 
                 total_height = await session_control.active_page.evaluate('''() => {
@@ -554,11 +585,23 @@ async def main(config, base_dir) -> None:
                         logger.info(total_height)
                         logger.info(clip)
 
+                    # Capture a compact JPEG (quality ~75) for speed; avoid full_page when clipping
+                    t_ss_start = time.time()
                     try:
-                        await session_control.active_page.screenshot(path=input_image_path, clip=clip, full_page=True,
-                                                                     type='jpeg', quality=100, timeout=20000)
+                        await session_control.active_page.screenshot(
+                            path=input_image_path,
+                            clip=clip,
+                            type='jpeg',
+                            quality=75,
+                            timeout=10000
+                        )
                     except Exception as e_clip:
                         logger.info(f"Failed to get cropped screenshot because {e_clip}")
+                    ss_ms = int((time.time() - t_ss_start) * 1000)
+                    try:
+                        img_bytes = os.path.getsize(input_image_path) if os.path.exists(input_image_path) else 0
+                    except Exception:
+                        img_bytes = 0
 
                     if dev_mode:
                         logger.info(multichoice_i)
@@ -580,20 +623,11 @@ async def main(config, base_dir) -> None:
                         for prompt_i in prompt:
                             logger.info("%s", prompt_i)
 
-                    try:
-                        output0 = generation_model.generate(prompt=prompt, image_path=input_image_path, turn_number=0)
-                    except Exception as e:
-                        logger.info("Model generation error (phase 1): %s", e)
-                        output0 = "Proceeding with safe fallback."
-
+                    # One-turn decision: call only once with the referring prompt; log a stub for the planning section
                     terminal_width = 10
                     logger.info("-" * terminal_width)
                     logger.info("🤖Action Generation Output🤖")
-
-                    for line in output0.split('\n'):
-                        logger.info("%s", line)
-
-                    terminal_width = 10
+                    logger.info("One-turn mode: generating structured decision in a single call.")
                     logger.info("-" * (terminal_width))
 
                     choice_text = f"(Multichoice Question) - Batch {multichoice_i // step_length}" + "\n" + format_options(
@@ -603,17 +637,21 @@ async def main(config, base_dir) -> None:
                     for line in choice_text.split('\n'):
                         logger.info("%s", line)
 
+                    t_llm_start = time.time()
                     try:
                         output = generation_model.generate(
                             prompt=prompt,
                             image_path=input_image_path,
                             turn_number=1,
-                            ouput_0=output0,
+                            ouput_0="",
+                            max_new_tokens=384,
+                            image_detail="auto",
                         )
                     except Exception as e:
                         logger.info("Model generation error (grounding): %s", e)
                         none_letter = generate_option_name(len(choices)) if choices else "A"
                         output = f"ELEMENT: {none_letter}\nACTION: NONE\nVALUE: None"
+                    llm_ms = int((time.time() - t_llm_start) * 1000)
 
                     terminal_width = 10
                     logger.info("-" * terminal_width)
@@ -687,7 +725,7 @@ async def main(config, base_dir) -> None:
                             base = _re.sub(r"<[^>]+>", " ", base)
                             return base.strip().lower()
 
-                        plan_targets = _extract_plan_targets(output0)
+                        plan_targets = _extract_plan_targets(output)
                         if plan_targets and choices:
                             best = (-1.0, None)
                             for idx, txt in enumerate(choices):
@@ -700,7 +738,7 @@ async def main(config, base_dir) -> None:
                                 fb_idx = best[1]
                                 target_element = elements[candidate_ids[fb_idx]]
                                 target_element_text = choices[fb_idx]
-                                action_guess, value_guess = _parse_action_from_plan(output0)
+                                action_guess, value_guess = _parse_action_from_plan(output)
                                 target_action = action_guess
                                 target_value = value_guess
                                 new_action += "[" + target_element[2] + "]" + " "
@@ -710,6 +748,14 @@ async def main(config, base_dir) -> None:
                                 got_one_answer = True
                                 break
 
+                    # Log per-batch metrics
+                    try:
+                        prompt_text = "\n".join(str(p) for p in (prompt or []))
+                        approx_tokens = int(len(prompt_text) / 4)
+                        logger.info(f"metrics: scan_ms={t_scan_ms} ss_ms={ss_ms} img_bytes={img_bytes} llm_ms={llm_ms} approx_tokens={approx_tokens}")
+                    except Exception:
+                        pass
+
                 if got_one_answer:
                     terminal_width = 10
                     logger.info("-" * terminal_width)
@@ -717,6 +763,63 @@ async def main(config, base_dir) -> None:
                     logger.info(f"Target Element: {target_element_text}", )
                     logger.info(f"Target Action: {target_action}", )
                     logger.info(f"Target Value: {target_value}", )
+
+                    # Repeat/no-progress guard: if same target on same URL repeatedly, suppress and nudge scroll
+                    try:
+                        _url_now = session_control.active_page.url
+                    except Exception:
+                        _url_now = ""
+                    _target_key = f"{target_action}|{target_element_text}".strip()
+                    if _url_now == (last_url or "") and _target_key and _target_key == (last_target_key or ""):
+                        repeat_clicks += 1
+                    else:
+                        repeat_clicks = 0
+
+                    if repeat_clicks >= 1 and target_action == "CLICK":
+                        try:
+                            await session_control.active_page.evaluate(
+                                "window.scrollBy(0, Math.min(window.innerHeight * 0.6, 600));"
+                            )
+                        except Exception:
+                            pass
+                        taken_actions.append(
+                            f"Auto-nudge: suppressed repeat of {target_action} {target_element_text}; scrolled"
+                        )
+                        if monitor_signal not in ["pause", "reject"]:
+                            no_op_count += 1
+                        time_step += 1
+                        last_url = _url_now
+                        last_target_key = _target_key
+                        continue
+
+                    # Repeat/no-progress guard: if same target on same URL repeatedly, suppress and nudge scroll
+                    try:
+                        _url_now = session_control.active_page.url
+                    except Exception:
+                        _url_now = ""
+                    _target_key = f"{target_action}|{target_element_text}".strip()
+                    if _url_now == (last_url or "") and _target_key and _target_key == (last_target_key or ""):
+                        repeat_clicks += 1
+                    else:
+                        repeat_clicks = 0
+
+                    if repeat_clicks >= 1 and target_action == "CLICK":
+                        try:
+                            await session_control.active_page.evaluate(
+                                "window.scrollBy(0, Math.min(window.innerHeight * 0.6, 600));"
+                            )
+                        except Exception:
+                            pass
+                        taken_actions.append(
+                            f"Auto-nudge: suppressed repeat of {target_action} {target_element_text}; scrolled"
+                        )
+                        if monitor_signal not in ["pause", "reject"]:
+                            no_op_count += 1
+                        time_step += 1
+                        # Skip executing this repeated action
+                        last_url = _url_now
+                        last_target_key = _target_key
+                        continue
 
                     if monitor:
                         logger.info(
@@ -879,6 +982,18 @@ async def main(config, base_dir) -> None:
                         if monitor_signal not in ["pause", "reject"]:
                             no_op_count += 1
                     taken_actions.append(new_action)
+                    # Update repeat/no-progress guard state after execution attempt
+                    try:
+                        last_url = session_control.active_page.url
+                    except Exception:
+                        pass
+                    last_target_key = _target_key if got_one_answer else last_target_key
+                    # Update repeat/no-progress guard state after execution attempt
+                    try:
+                        last_url = session_control.active_page.url
+                    except Exception:
+                        pass
+                    last_target_key = _target_key if got_one_answer else last_target_key
                     if not session_control.context.pages:
                         await session_control.context.new_page()
                         try:
@@ -889,7 +1004,7 @@ async def main(config, base_dir) -> None:
                     if monitor_signal == 'pause':
                         pass
                     else:
-                        await asyncio.sleep(3)
+                        await asyncio.sleep(0.3)
                     if dev_mode:
                         logger.info(f"current active page: {session_control.active_page}")
                         logger.info("All pages")
@@ -1192,7 +1307,7 @@ async def main(config, base_dir) -> None:
                 except Exception:
                     include_dom_in_choices = False
 
-                if ranker_path and len(elements) > top_k:
+                if ranker_enabled and len(elements) > top_k:
                     ranking_input = format_ranking_input(elements, confirmed_task, taken_actions)
                     logger.info("Start to rank")
                     try:
@@ -1208,7 +1323,7 @@ async def main(config, base_dir) -> None:
                         )
                     except Exception as e:
                         logger.info(f"Ranking failed; falling back to all elements: {e}")
-                        ranker_path = None
+                        ranker_enabled = False
                         all_candidate_ids = range(len(elements))
                         ranked_elements = elements
                     else:
@@ -1228,7 +1343,7 @@ async def main(config, base_dir) -> None:
 
                 all_candidate_ids = [element_id[0] for element_id in all_candidate_ids_with_location]
                 num_choices = len(all_candidate_ids)
-                if ranker_path:
+                if ranker_enabled:
                     logger.info(f"# element candidates: {num_choices}")
 
                 total_height = await session_control.active_page.evaluate('''() => {
@@ -1296,11 +1411,22 @@ async def main(config, base_dir) -> None:
                         logger.info(total_height)
                         logger.info(clip)
 
+                    t_ss_start = time.time()
                     try:
-                        await session_control.active_page.screenshot(path=input_image_path, clip=clip, full_page=True,
-                                                                     type='jpeg', quality=100, timeout=20000)
+                        await session_control.active_page.screenshot(
+                            path=input_image_path,
+                            clip=clip,
+                            type='jpeg',
+                            quality=75,
+                            timeout=10000
+                        )
                     except Exception as e_clip:
                         logger.info(f"Failed to get cropped screenshot because {e_clip}")
+                    ss_ms = int((time.time() - t_ss_start) * 1000)
+                    try:
+                        img_bytes = os.path.getsize(input_image_path) if os.path.exists(input_image_path) else 0
+                    except Exception:
+                        img_bytes = 0
 
                     if dev_mode:
                         logger.info(multichoice_i)
@@ -1325,22 +1451,10 @@ async def main(config, base_dir) -> None:
                         for prompt_i in prompt:
                             logger.info("%s", prompt_i)
 
-                    try:
-                        output0 = generation_model.generate(prompt=prompt, image_path=input_image_path, turn_number=0)
-                    except Exception as e:
-                        logger.info("Model generation error (phase 1): %s", e)
-                        output0 = "Proceeding with safe fallback."
-
                     terminal_width = 10
                     logger.info("-" * terminal_width)
                     logger.info("🤖Action Generation Output🤖")
-
-                    # logger.info(output0)
-
-                    for line in output0.split('\n'):
-                        logger.info("%s", line)
-
-                    terminal_width = 10
+                    logger.info("One-turn mode: generating structured decision in a single call.")
                     logger.info("-" * (terminal_width))
 
                     choice_text = f"(Multichoice Question) - Batch {multichoice_i // step_length}" + "\n" + format_options(
@@ -1351,17 +1465,21 @@ async def main(config, base_dir) -> None:
                         logger.info("%s", line)
                     # logger.info(choice_text)
 
+                    t_llm_start = time.time()
                     try:
                         output = generation_model.generate(
                             prompt=prompt,
                             image_path=input_image_path,
                             turn_number=1,
-                            ouput_0=output0,
+                            ouput_0="",
+                            max_new_tokens=384,
+                            image_detail="auto",
                         )
                     except Exception as e:
                         logger.info("Model generation error (grounding): %s", e)
                         none_letter = generate_option_name(len(choices)) if choices else "A"
                         output = f"ELEMENT: {none_letter}\nACTION: NONE\nVALUE: None"
+                    llm_ms = int((time.time() - t_llm_start) * 1000)
 
                     terminal_width = 10
                     logger.info("-" * terminal_width)
@@ -1403,7 +1521,7 @@ async def main(config, base_dir) -> None:
                         got_one_answer = True
                         break
                     else:
-                        # Fuzzy fallback: use the plan (output0) to pick a similar choice
+                        # Fuzzy fallback: use the same one-turn output text to infer likely target
                         def _extract_plan_targets(text: str):
                             import re as _re
                             cands = []
@@ -1442,7 +1560,7 @@ async def main(config, base_dir) -> None:
                             base = _re.sub(r"<[^>]+>", " ", base)
                             return base.strip().lower()
 
-                        plan_targets = _extract_plan_targets(output0)
+                        plan_targets = _extract_plan_targets(output)
                         if plan_targets and choices:
                             best = (-1.0, None)
                             for idx, txt in enumerate(choices):
@@ -1455,7 +1573,7 @@ async def main(config, base_dir) -> None:
                                 fb_idx = best[1]
                                 target_element = elements[candidate_ids[fb_idx]]
                                 target_element_text = choices[fb_idx]
-                                action_guess, value_guess = _parse_action_from_plan(output0)
+                                action_guess, value_guess = _parse_action_from_plan(output)
                                 target_action = action_guess
                                 target_value = value_guess
                                 new_action += "[" + target_element[2] + "]" + " "
@@ -1464,6 +1582,13 @@ async def main(config, base_dir) -> None:
                                     new_action += ": " + target_value
                                 got_one_answer = True
                                 break
+                    # Log per-batch metrics
+                    try:
+                        prompt_text = "\n".join(str(p) for p in (prompt or []))
+                        approx_tokens = int(len(prompt_text) / 4)
+                        logger.info(f"metrics: scan_ms={t_scan_ms} ss_ms={ss_ms} img_bytes={img_bytes} llm_ms={llm_ms} approx_tokens={approx_tokens}")
+                    except Exception:
+                        pass
 
                 if got_one_answer:
                     terminal_width = 10
@@ -1744,7 +1869,7 @@ async def main(config, base_dir) -> None:
                     if monitor_signal == 'pause':
                         pass
                     else:
-                        await asyncio.sleep(3)
+                        await asyncio.sleep(0.3)
                     if dev_mode:
                         logger.info(f"current active page: {session_control.active_page}")
 

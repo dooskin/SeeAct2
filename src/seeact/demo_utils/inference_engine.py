@@ -128,7 +128,7 @@ class OllamaEngine(Engine):
 
 
     def generate(self, prompt: list = None, max_new_tokens=4096, temperature=None, model=None, image_path=None,
-                 ouput_0=None, turn_number=0, **kwargs):
+                 ouput_0=None, turn_number=0, image_detail: str = "auto", **kwargs):
         self.current_key_idx = (self.current_key_idx + 1) % len(self.time_slots)
         start_time = time.time()
         if (
@@ -185,7 +185,7 @@ class GeminiEngine(Engine):
 
 
     def generate(self, prompt: list = None, max_new_tokens=4096, temperature=None, model=None, image_path=None,
-                 ouput_0=None, turn_number=0, **kwargs):
+                 ouput_0=None, turn_number=0, image_detail: str = "auto", **kwargs):
         self.current_key_idx = (self.current_key_idx + 1) % len(self.time_slots)
         start_time = time.time()
         if (
@@ -247,7 +247,7 @@ class OpenAIEngine(Engine):
         (APIError, RateLimitError, APIConnectionError),
     )
     def generate(self, prompt: list = None, max_new_tokens=4096, temperature=None, model=None, image_path=None,
-                 ouput_0=None, turn_number=0, **kwargs):
+                 ouput_0=None, turn_number=0, image_detail: str = "auto", **kwargs):
         self.current_key_idx = (self.current_key_idx + 1) % len(self.time_slots)
         start_time = time.time()
         if (
@@ -263,7 +263,7 @@ class OpenAIEngine(Engine):
             return {"type": "text", "text": txt}
 
         def _mm_image_b64(b64: str):
-            return {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}}
+            return {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": image_detail}}
 
         if turn_number == 0:
             user_content = [_mm_text(prompt1)] + ([_mm_image_b64(base64_image)] if base64_image else [])

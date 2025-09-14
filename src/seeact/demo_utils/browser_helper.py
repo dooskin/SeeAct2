@@ -331,10 +331,13 @@ async def get_element_data(element, tag_name,viewport_size,seen_elements=[]):
 
 
 async def get_interactive_elements_with_playwright(page, viewport_size=None):
+    # Broaden initial pass to include common ARIA widgets that appear as non-form tags
     interactive_elements_selectors = [
         'a', 'button',
         'input',
         'select', 'textarea',
+        '[role="slider"]',
+        '[role="option"]',
     ]
 
     seen_elements = set()
@@ -362,8 +365,52 @@ async def get_interactive_elements_with_playwright(page, viewport_size=None):
                 seen_elements.add(i["center_point"])
                 interactive_elements.append(i)
 
+    # Heuristic pass: include clickable ancestors of prominent images/figures
+    # Many PLPs render product tiles where the clickable target is an ancestor of an image
+    try:
+        img_like_selectors = ["img", "picture", "figure"]
+        # Limit the number of img-like nodes to keep the scan bounded
+        max_imgs = 200
+        for sel in img_like_selectors:
+            locator = page.locator(sel)
+            count = await locator.count()
+            # Only iterate over a capped number to avoid heavy scans
+            for index in range(min(count, max_imgs)):
+                el = locator.nth(index)
+                try:
+                    # Ensure the image is visible and within viewport bounds via its bounding box
+                    bbox = await el.bounding_box() or {}
+                    if not bbox or bbox.get("width", 0) <= 4 or bbox.get("height", 0) <= 4:
+                        continue
+                    # Prefer closest anchor; otherwise any ancestor that behaves like a link/button
+                    anc_anchor = el.locator("xpath=ancestor::a[1]")
+                    anc_clickable = el.locator(
+                        "xpath=ancestor-or-self::*[@role='link' or @role='button' or @onclick][1]"
+                    )
+                    target_locator = anc_anchor if (await anc_anchor.count()) > 0 else anc_clickable
+                    if (await target_locator.count()) == 0:
+                        continue
+                    target = target_locator.first
+                    # De-duplicate by center_point using get_element_data
+                    data = await get_element_data(target, "a", viewport_size, seen_elements)
+                    if data:
+                        interactive_elements.append(data)
+                except Exception:
+                    continue
+    except Exception:
+        # Fallback silently if this heuristic fails
+        pass
+
+    # Narrow the broad sweep to common interactive fallbacks to avoid scanning the entire DOM
     interactive_elements_selectors = [
-        '*'
+        '[role="button"]',
+        '[role="link"]',
+        '[role="menuitem"]',
+        '[role="tab"]',
+        '[role="checkbox"]',
+        '[role="radio"]',
+        '[onclick]',
+        '[tabindex]'
     ]
     tasks = []
 
