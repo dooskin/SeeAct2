@@ -1,0 +1,2 @@
+{"event": "run_start", "run_id": "5c8521c1a299", "concurrency": 1, "num_tasks": 15, "config_path": "src/seeact/config/runner_browserbase.toml", "ts": 1757963494.245653}
+{"event": "task_start", "run_id": "5c8521c1a299", "worker_id": 0, "task_id": "ab_mens_plp_add_01", "website": "https://www.allbirds.com/collections/mens", "confirmed_task": "On Allbirds, open a men's running shoe PDP, choose size US 10, add 1 to cart, go to checkout and STOP before payment. Return: product title, PDP URL, price, variant, and checkout subtotal.", "persona_id": null, "ts": 1757963494.8041768}

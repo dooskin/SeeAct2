@@ -256,12 +256,112 @@ Outputs:
   - Set in TOML: `[basic] save_file_dir = "/Users/<you>/Downloads/seeact_artifacts"`
   - CLI for metrics: `--metrics-dir "/Users/<you>/Downloads/seeact_runs"`
 
+### Browserbase/CDP at Scale (A/B trial pattern)
+
+- Config: use `src/seeact/config/runner_browserbase.toml` (provider="browserbase"). Set env vars:
+  - `export BROWSERBASE_API_KEY=bb_...`
+  - `export BROWSERBASE_PROJECT_ID=...`
+  - `export OPENAI_API_KEY=sk-...`
+
+- Optional session options (passed through to Browserbase):
+  - Add under `[runtime.session_options]` in your TOML to tune reliability and speed. Common flags:
+    - `stealth = true` (reduce automation signals)
+    - `blockAds = true` (block ads/trackers to speed loads)
+    - `locale = "en-US"`, `timezoneId = "America/Los_Angeles"`
+    - `userAgent = "Mozilla/5.0 ... Chrome/... Safari/537.36"`
+    - `viewport.width = 1024`, `viewport.height = 600`
+    - `extraHTTPHeaders = [{ name = "Accept-Language", value = "en-US,en;q=0.9" }]`
+    - Optional: `geolocation.*`, `proxy.*`, `extensions`
+  - Example:
+```toml
+[runtime]
+provider   = "browserbase"
+project_id = "${BROWSERBASE_PROJECT_ID}"
+
+[runtime.session_options]
+stealth = true
+blockAds = true
+locale = "en-US"
+timezoneId = "America/Los_Angeles"
+userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+viewport.width = 1024
+viewport.height = 600
+extraHTTPHeaders = [{ name = "Accept-Language", value = "en-US,en;q=0.9" }]
+```
+
+- A/B split: create two task files of 500 tasks each, `tasks_A.json` and `tasks_B.json` (identical content or tagged with `_variant`).
+
+- Launch (single-process example):
+```bash
+# Variant A (500 tasks)
+python -m seeact.runner -c src/seeact/config/runner_browserbase.toml \
+  --tasks data/online_tasks/tasks_A.json \
+  --metrics-dir runs/AB_A --concurrency 25 --verbose
+
+# Variant B (500 tasks)
+python -m seeact.runner -c src/seeact/config/runner_browserbase.toml \
+  --tasks data/online_tasks/tasks_B.json \
+  --metrics-dir runs/AB_B --concurrency 25 --verbose
+```
+
+- Sharding for higher throughput: split each 500‑task file into N shards and launch N processes in parallel per side (e.g., 20 shards × `--concurrency 25` ≈ 500 concurrent agents). Use separate `--metrics-dir` per process (they will each create `run_<id>` subfolders).
+
+Note: The runner currently creates one Browserbase session per task. A future optimization (commented in code) is to reuse a single session per worker to reduce cold starts and avoid burst limits; we’ve left the sketch in `seeact/runner.py` for later adoption.
+
+
 Tasks path resolution:
 - If you pass `--tasks`, relative paths resolve from your current working directory.
 - If you rely on `[experiment].task_file_path` in TOML, relative paths resolve from the project base (the folder above `src/`).
 
 Note on auto mode:
 - Auto mode skips tasks when outputs exist and `overwrite=false`. If all tasks are skipped, nothing runs. Prefer the runner for batch work.
+
+### Completion & Results (Runner and Demo)
+
+- Completion: when the agent reaches checkout (generic detection: URL contains `/checkout` or `checkout.`), it STOPs and extracts a small result payload.
+- Result payload fields (best‑effort, generic across sites):
+  - `products`: list of `{ title, qty }` collected from order summary (fallback to cart rows when needed).
+  - `subtotal` and `total`: parsed from order summary text if present.
+  - `checkout_url`: current page URL at STOP time.
+- Runner: attaches the result payload to each `task_complete` event in `metrics.jsonl` (field: `result`).
+- Demo/Agent artifacts: still write `result.json` and `all_predictions.json` under `[basic].save_file_dir`.
+
+### Macros (Recipe‑Lite) & Config
+
+- The agent uses a small set of deterministic macros to progress common flows (collection → PDP → variant → Add to Cart → checkout) without site‑specific code.
+- Targeting is structural (anchors under product grid, visible/position‑based) with a light bias from task‑derived keywords (parsed from `confirmed_task`). No fixed product word lists are hardcoded.
+- You can adjust selectors in TOML (optional):
+```toml
+[macros]
+product_href_patterns = ["/products", "/product"]
+product_section_selectors = ["main", "section[role='main']"]
+exclude_regions.bottom_fraction = 0.2
+exclude_regions.top_fraction = 0.0
+variant_labels = ["size", "color", "variant", "style"]
+atc_selectors = ["button[name*='add']", "button:has-text('add to cart')", "form[action*='/cart/add'] button[type='submit']"]
+checkout_selectors = ["button:has-text('checkout')", "a[href*='/checkout']"]
+```
+- Macro escalation: when the same CLICK repeats on an unchanged URL, the agent nudges (scroll) once, then escalates to a macro to break the loop.
+
+### OpenAI Timeout & Per‑Step Metrics
+
+- Configure a per‑call LLM timeout in TOML (defaults to ~20s):
+```toml
+[openai]
+timeout_sec = 20
+```
+- The agent logs concise step metrics to aid tuning and debugging:
+  - `metrics: scan_ms=<int> llm_ms=<int> macro_used=<true|false> num_candidates=<int>`
+
+### Inputs Overview
+
+- Tasks JSON: array of objects with fields (minimum):
+  - `task_id`: string identifier (runner fills a UUID if missing).
+  - `website`: absolute URL for the starting page.
+  - `confirmed_task`: natural‑language goal/instructions.
+- Personas (optional): YAML file with weighted personas; runner maps persona ids to sites by prefix and samples by weight.
+- Runtime providers: `local`, `cdp`, or `browserbase` via `[runtime]` in TOML. For Browserbase, use `[runtime.session_options]` to enable `stealth`, `blockAds`, `locale`, `timezoneId`, `userAgent`, `viewport`, `extraHTTPHeaders`, etc.
+- Experiment knobs: `[experiment]` includes `top_k`, `fixed_choice_batch_size`, `dynamic_choice_batch_size`, `include_dom_in_choices`, `max_op`, and visual aids (`monitor`, `highlight`).
 
 ## Recently Shipped
 

@@ -1,0 +1,78 @@
+[
+  {
+    "task_id": "ab_mens_plp_add_01",
+    "website": "https://www.allbirds.com/collections/mens",
+    "confirmed_task": "On Allbirds, open a men's running shoe PDP, choose size US 10, add 1 to cart, go to checkout and STOP before payment. Return: product title, PDP URL, price, variant, and checkout subtotal."
+  },
+  {
+    "task_id": "ab_mens_search_add_02",
+    "website": "https://www.allbirds.com/",
+    "confirmed_task": "On Allbirds, use search to find men's running shoes, open a product PDP, choose size US 10, add 1 to cart, go to checkout and STOP before payment. Return: product title, PDP URL, price, variant, and checkout subtotal."
+  },
+  {
+    "task_id": "ab_mens_plp_filter_size_03",
+    "website": "https://www.allbirds.com/collections/mens",
+    "confirmed_task": "On Allbirds, from Men's Shoes, open filters, apply size US 10 (if present), open any running shoe PDP, add 1 to cart, go to checkout and STOP before payment. Return details."
+  },
+  {
+    "task_id": "ab_mens_plp_sort_best_04",
+    "website": "https://www.allbirds.com/collections/mens",
+    "confirmed_task": "On Allbirds, from Men's Shoes, sort by best sellers or top rated (closest available), open a running shoe PDP, choose size US 10, add 1 to cart, proceed to checkout and STOP before payment. Return details."
+  },
+  {
+    "task_id": "ab_mens_plp_color_black_05",
+    "website": "https://www.allbirds.com/collections/mens",
+    "confirmed_task": "On Allbirds, from Men's Shoes, filter for running shoes and color black if available, open a PDP, choose size US 10, add 1 to cart, proceed to checkout and STOP before payment. Return details."
+  },
+  {
+    "task_id": "ab_mens_search_tree_dasher_06",
+    "website": "https://www.allbirds.com/",
+    "confirmed_task": "On Allbirds, search for 'Tree Dasher', open a running shoe PDP, choose size US 10, add 1 to cart, proceed to checkout and STOP before payment. Return details."
+  },
+  {
+    "task_id": "ab_mens_plp_white_07",
+    "website": "https://www.allbirds.com/collections/mens",
+    "confirmed_task": "On Allbirds, find a white men's running shoe (or closest), open the PDP, choose size US 10, add 1 to cart, proceed to checkout and STOP before payment. Return details."
+  },
+  {
+    "task_id": "ab_mens_plp_any_runner_08",
+    "website": "https://www.allbirds.com/collections/mens",
+    "confirmed_task": "On Allbirds, from Men's collection, open any running shoe PDP, choose an in-stock size US 10 (or nearest available), add 1 to cart, proceed to checkout and STOP before payment. Return details."
+  },
+  {
+    "task_id": "ab_mens_plp_nudge_filters_09",
+    "website": "https://www.allbirds.com/collections/mens",
+    "confirmed_task": "On Allbirds, open the filter panel, explore size options, then open a running shoe PDP, choose size US 10, add 1 to cart, go to checkout and STOP before payment. Return details."
+  },
+  {
+    "task_id": "ab_mens_search_running_10",
+    "website": "https://www.allbirds.com/",
+    "confirmed_task": "On Allbirds, use search 'men running', open a PDP, choose size US 10, add 1 to cart, go to checkout and STOP before payment. Return details."
+  },
+  {
+    "task_id": "ab_mens_plp_sort_price_asc_11",
+    "website": "https://www.allbirds.com/collections/mens",
+    "confirmed_task": "On Allbirds, sort Men's Shoes by price ascending if available (or closest), open a running shoe PDP, choose size US 10, add to cart, go to checkout and STOP. Return details."
+  },
+  {
+    "task_id": "ab_mens_plp_sort_price_desc_12",
+    "website": "https://www.allbirds.com/collections/mens",
+    "confirmed_task": "On Allbirds, sort Men's Shoes by price descending if available (or closest), open a running shoe PDP, choose size US 10, add to cart, go to checkout and STOP. Return details."
+  },
+  {
+    "task_id": "ab_mens_plp_filter_category_13",
+    "website": "https://www.allbirds.com/collections/mens",
+    "confirmed_task": "On Allbirds, filter to running-specific category if present, open a PDP, choose size US 10, add 1 to cart, go to checkout and STOP before payment. Return details."
+  },
+  {
+    "task_id": "ab_mens_plp_variant_color_14",
+    "website": "https://www.allbirds.com/collections/mens",
+    "confirmed_task": "On Allbirds, open any men's running shoe PDP, switch to a different color if needed, choose size US 10, add to cart, proceed to checkout and STOP before payment. Return details."
+  },
+  {
+    "task_id": "ab_mens_search_query_15",
+    "website": "https://www.allbirds.com/",
+    "confirmed_task": "On Allbirds, search for 'men running shoe US 10', open a PDP, choose size US 10, add to cart, proceed to checkout and STOP. Return details."
+  }
+]
+

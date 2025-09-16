@@ -78,7 +78,8 @@ except Exception:
 
     async def aprint(*args, **kwargs) -> None:
         print(*args, **kwargs)
-from playwright.async_api import async_playwright
+# Defer Playwright import to runtime so tests can stub it before use
+# Note: we import inside functions via importlib to respect sys.modules stubs
 
 from seeact.data_utils.format_prompt_utils import get_index_from_option_name, generate_option_name
 from seeact.data_utils.prompts import generate_prompt
@@ -280,13 +281,20 @@ async def main(config, base_dir) -> None:
     else:
         query_tasks = []
         task_dict = {}
-        task_input = await ainput(
-            f"Please input a task, and press Enter. \nOr directly press Enter to use the default task: {default_task}\nTask: ")
+        try:
+            task_input = await ainput(
+                f"Please input a task, and press Enter. \nOr directly press Enter to use the default task: {default_task}\nTask: ")
+        except Exception:
+            # Non-interactive environments (e.g., pytest capture) — fall back to default
+            task_input = ""
         if not task_input:
             task_input = default_task
         task_dict["confirmed_task"] = task_input
-        website_input = await ainput(
-            f"Please input the complete URL of the starting website, and press Enter. The URL must be complete (for example, including http), to ensure the browser can successfully load the webpage. \nOr directly press Enter to use the default website: {default_website}\nWebsite: ")
+        try:
+            website_input = await ainput(
+                f"Please input the complete URL of the starting website, and press Enter. The URL must be complete (for example, including http), to ensure the browser can successfully load the webpage. \nOr directly press Enter to use the default website: {default_website}\nWebsite: ")
+        except Exception:
+            website_input = ""
         if not website_input:
             website_input = default_website
         task_dict["website"] = website_input
@@ -1060,10 +1068,28 @@ async def main(config, base_dir) -> None:
         await aprint("No tasks to run: all outputs exist and overwrite=false. Use the runner for batch runs or set overwrite=true.")
         return
 
+    # Import Playwright lazily here to allow test stubs in sys.modules
+    import importlib
+    pa = importlib.import_module("playwright.async_api")
+    async_playwright = getattr(pa, "async_playwright")
     async with async_playwright() as playwright:
         # Choose local browser or connect over CDP (e.g., Browserbase)
         if provider in ("cdp",) and cdp_url:
-            session_control.browser = await playwright.chromium.connect_over_cdp(cdp_url, headers=headers)
+            # Normalize headers: prefer dict; fallback to array of {name,value} if required by Playwright version
+            headers_out = headers if isinstance(headers, dict) else (headers or None)
+            try:
+                session_control.browser = await playwright.chromium.connect_over_cdp(cdp_url, headers=headers_out)
+            except Exception as _e:
+                # Some versions expect an array of name/value pairs — retry in that shape
+                try:
+                    headers_array = None
+                    if isinstance(headers, dict):
+                        headers_array = [{"name": k, "value": v} for k, v in headers.items()]
+                    elif isinstance(headers, list):
+                        headers_array = headers
+                    session_control.browser = await playwright.chromium.connect_over_cdp(cdp_url, headers=headers_array)
+                except Exception:
+                    raise
             # Prefer an existing context for remote connections
             if getattr(session_control.browser, "contexts", None):
                 if session_control.browser.contexts:

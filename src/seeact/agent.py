@@ -22,15 +22,27 @@ from datetime import datetime
 from os.path import dirname
 
 import toml
-from playwright.async_api import async_playwright, Locator
+import importlib
+import asyncio
+import re
+import time
 
 from .data_utils.format_prompt_utils import get_index_from_option_name, generate_new_query_prompt, \
     generate_new_referring_prompt, format_options, generate_option_name
 from .demo_utils.browser_helper import normal_launch_async, normal_new_context_async, \
-    get_interactive_elements_with_playwright, select_option, saveconfig
+    get_interactive_elements_with_playwright, select_option, saveconfig, auto_dismiss_overlays
 from .demo_utils.crawler_helper import get_random_link
 from .demo_utils.format_prompt import format_choices, postprocess_action_lmm, postprocess_action_lmm_pixel
 from .demo_utils.inference_engine import engine_factory
+# Optional: Browserbase CDP session helpers
+try:
+    from .runtime.browserbase_client import (
+        resolve_credentials as bb_resolve,
+        create_session as bb_create,
+        close_session as bb_close,
+    )
+except Exception:
+    bb_resolve = bb_create = bb_close = None  # type: ignore
 
 
 class SeeActAgent:
@@ -69,10 +81,9 @@ class SeeActAgent:
 
         try:
             if config_path is not None:
-                with open(config_path,
-                          'r') as config:
+                with open(config_path, 'r') as fp:
                     print(f"Configuration File Loaded - {config_path}")
-                    config = toml.load(config)
+                    config = toml.load(fp)
             else:
                 config = {
                     "basic": {
@@ -95,19 +106,33 @@ class SeeActAgent:
                         "temperature": temperature
                     }
                 }
-            config.update({
-                "browser": {
-                    "headless": headless,
-                    "args": args,
-                    "browser_app": browser_app,
-                    "persistant": persistant,
-                    "persistant_user_path": persistant_user_path,
-                    "save_video": save_video,
-                    "viewport": viewport,
-                    "tracing": tracing,
-                    "trace": trace
+            # Normalize/augment config to a unified schema expected by this agent
+            # Ensure an 'agent' section exists
+            if "agent" not in config or not isinstance(config.get("agent"), dict):
+                config["agent"] = {
+                    "input_info": config.get("agent", {}).get("input_info", ["screenshot"]),
+                    "grounding_strategy": config.get("agent", {}).get("grounding_strategy", grounding_strategy),
+                    "max_auto_op": config.get("agent", {}).get("max_auto_op", max_auto_op),
+                    "max_continuous_no_op": config.get("agent", {}).get("max_continuous_no_op", max_continuous_no_op),
+                    "highlight": config.get("agent", {}).get("highlight", highlight),
                 }
-            })
+
+            # Map Playwright section to 'browser' section
+            pw = config.get("playwright", {}) or {}
+            pw_viewport = pw.get("viewport") or viewport
+            if not isinstance(pw_viewport, dict):
+                pw_viewport = viewport
+            config["browser"] = {
+                "headless": headless if headless is not None else False,
+                "args": args or [],
+                "browser_app": browser_app,
+                "persistant": persistant,
+                "persistant_user_path": persistant_user_path,
+                "save_video": save_video,
+                "viewport": pw_viewport,
+                "tracing": tracing if tracing is not None else bool(pw.get("tracing", False)),
+                "trace": pw.get("trace", trace),
+            }
 
         except FileNotFoundError:
             print(f"Error: File '{os.path.abspath(config_path)}' not found.")
@@ -121,6 +146,9 @@ class SeeActAgent:
             'context': None,
             'browser': None
         }
+        # Browserbase session bookkeeping
+        self._bb_session_id = None
+        self._bb_api_key = None
         self.tasks = [self.config["basic"]["default_task"]]
 
         self.main_path = os.path.join(self.config["basic"]["save_file_dir"], datetime.now().strftime("%Y%m%d_%H%M%S"))
@@ -166,6 +194,280 @@ class SeeActAgent:
         self.predictions = []
         self.visited_links = []
         self._page = None
+        # LLM timeout (seconds) for one-turn decisions (configurable via [openai].timeout_sec)
+        self._llm_timeout_sec = int((self.config.get("openai") or {}).get("timeout_sec", 20))
+        # Final result payload if we reach completion (used by runner to emit task_complete with results)
+        self.final_result: dict | None = None
+        # Macro configuration (selectors/patterns) with sane defaults; may be overridden by TOML [macros]
+        mcfg = (self.config.get("macros") or {})
+        self._macro_cfg = {
+            "product_href_patterns": mcfg.get("product_href_patterns", ["/products", "/product"]),
+            "product_section_selectors": mcfg.get("product_section_selectors", ["main", "section[role='main']"]),
+            "exclude_regions": mcfg.get("exclude_regions", {"bottom_fraction": 0.2, "top_fraction": 0.0}),
+            "variant_labels": mcfg.get("variant_labels", ["size", "color", "variant", "style"]),
+            "atc_selectors": mcfg.get("atc_selectors", [
+                "button[name*='add' i]", "button:has-text('add to cart' i)", "form[action*='/cart/add'] button[type='submit']",
+            ]),
+            "checkout_selectors": mcfg.get("checkout_selectors", [
+                "button:has-text('checkout' i)", "a[href*='/checkout']",
+            ]),
+        }
+
+    async def _generate_with_timeout(self, **kwargs):
+        """Run self.engine.generate in a thread with a timeout to prevent step stalls."""
+        def _call():
+            try:
+                return self.engine.generate(**kwargs)
+            except Exception as e:
+                return f"ELEMENT: Z\nACTION: NONE\nVALUE: None\nERROR: {e}"
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(_call), timeout=self._llm_timeout_sec)
+        except asyncio.TimeoutError:
+            return None
+
+    def _task_keywords(self) -> list[str]:
+        """Extract light-weight task keywords (nouns-ish) from confirmed_task for generic biasing."""
+        text = (self.tasks[-1] if self.tasks else "")
+        text = text.lower()
+        tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9\-]{2,}", text)
+        stop = {
+            'the','and','for','from','with','into','onto','that','this','those','these','any','all','you','your',
+            'use','open','find','page','product','products','add','cart','checkout','before','payment','stop','return',
+            'choose','select','size','color','variant','best','now','click','go','to','of','in','on','at','it','then',
+            'site','store','shop','default','one','two','by','rate','rating'
+        }
+        kws = [t for t in tokens if t not in stop and len(t) <= 24]
+        seen = set(); out = []
+        for k in kws:
+            if k not in seen:
+                seen.add(k); out.append(k)
+        return out[:6]
+
+    async def _macro_next_action(self):
+        """Heuristic next action to progress common shopping flows (collection → PDP → size → ATC → checkout)."""
+        page = self.page
+        url = ""
+        try:
+            url = page.url
+        except Exception:
+            pass
+        # Helper to build a prediction dict from a locator
+        async def _pred_from_locator(loc, desc, tag="div"):
+            return {
+                "action_generation": "",
+                "action_grounding": "",
+                "element": {
+                    "center_point": (0, 0),
+                    "description": desc,
+                    "tag_with_role": tag,
+                    "box": [0, 0, 0, 0],
+                    "selector": loc,
+                    "tag": tag,
+                },
+                "action": "CLICK",
+                "value": "",
+            }
+        # 1) If on collection page: click a product tile anchor under main grid, generic bias using task keywords; avoid header/footer
+        try:
+            if "/collections/" in url and "/products/" not in url:
+                # Build product anchor locator from macro config patterns
+                href_or = " | ".join([f"a[href*='{p}']" for p in self._macro_cfg["product_href_patterns"]])
+                sections = ", ".join(self._macro_cfg["product_section_selectors"])
+                candidates = page.locator(f"{sections} {href_or}")
+                count = await candidates.count()
+                if count == 0:
+                    candidates = page.locator(href_or)
+                    count = await candidates.count()
+                if count > 0:
+                    # Score by visibility + position + small keyword bias from task
+                    best = (0.0, None)
+                    vp = await page.evaluate("() => ({w: window.innerWidth, h: window.innerHeight})")
+                    keywords = self._task_keywords()
+                    bf = float(self._macro_cfg.get("exclude_regions", {}).get("bottom_fraction", 0.2) or 0.2)
+                    tf = float(self._macro_cfg.get("exclude_regions", {}).get("top_fraction", 0.0) or 0.0)
+                    for i in range(min(count, 20)):
+                        el = candidates.nth(i)
+                        try:
+                            if not await el.is_visible(timeout=500):
+                                continue
+                            box = await el.bounding_box() or {"y": 0, "height": 0}
+                            y = box.get("y", 0) + box.get("height", 0) / 2
+                            # exclude header/top and footer/bottom regions
+                            if vp:
+                                h = float(vp.get("h", 1000))
+                                if y > (1.0 - bf) * h:
+                                    continue
+                                if y < tf * h:
+                                    continue
+                            txt = (await el.inner_text(timeout=500) or "").lower()
+                            score = 1.0
+                            # small bias if anchor text contains any task keyword
+                            if keywords and any(k in txt for k in keywords):
+                                score += 0.75
+                            # prefer higher on page modestly
+                            score += max(0.0, 0.8 - (y / max(1.0, float(vp.get("h", 1000)))))
+                            if score > best[0]:
+                                best = (score, el)
+                        except Exception:
+                            continue
+                    if best[1] is not None:
+                        return await _pred_from_locator(best[1], "Open product tile", "a")
+        except Exception:
+            pass
+        # 2) On PDP: select a visible variant if required (generic labels/roles), or click Add to Cart if enabled
+        try:
+            is_pdp = "/products/" in url or (await page.locator('form[action*="/cart/add"]').count() > 0)
+        except Exception:
+            is_pdp = False
+        if is_pdp:
+            # Try common role/inputs for variant selection generically
+            variant_selectors = [
+                "[role='radio']", "[role='option']", "input[type='radio'] + label", "select", "[role='combobox']",
+                "button:has-text('size' i)", "button:has-text('variant' i)", "label:has-text('size' i)",
+            ]
+            for sel in variant_selectors:
+                try:
+                    loc = page.locator(sel).first
+                    if await loc.count() > 0 and await loc.is_visible(timeout=1000):
+                        return await _pred_from_locator(loc, f"Select variant {sel}", "button")
+                except Exception:
+                    continue
+            # 3) Add to cart
+            atc_selectors = self._macro_cfg["atc_selectors"]
+            for sel in atc_selectors:
+                try:
+                    loc = page.locator(sel).first
+                    if await loc.count() > 0 and await loc.is_visible(timeout=1000):
+                        return await _pred_from_locator(loc, "Add to cart", "button")
+                except Exception:
+                    continue
+        # 4) Checkout in cart drawer
+        checkout_sel = None
+        try:
+            # Prefer drawer dialogs
+            dialog = page.locator('[role="dialog"]').first
+            if await dialog.count() > 0:
+                cta = dialog.locator('button:has-text("Checkout"), a[href*="/checkout"]').first
+                if await cta.count() > 0 and await cta.is_visible(timeout=1000):
+                    checkout_sel = cta
+        except Exception:
+            pass
+        if checkout_sel is not None:
+            return await _pred_from_locator(checkout_sel, "Checkout", "button")
+        # 5) Fallback to Cart then Checkout (only if we likely added items)
+        try:
+            # Prefer clicking a cart icon/link if visible
+            cart_icon = page.locator('a[href*="/cart"], button[aria-label*="cart" i], a[aria-label*="cart" i]').first
+            if await cart_icon.count() > 0 and await cart_icon.is_visible(timeout=1000):
+                return await _pred_from_locator(cart_icon, "Open Cart", "a")
+            # Build absolute /cart URL based on current origin
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else None
+            if origin and "/cart" not in url:
+                return {
+                    "action_generation": "",
+                    "action_grounding": "",
+                    "element": None,
+                    "action": "GOTO",
+                    "value": origin + "/cart",
+                }
+            # Already on /cart → click checkout
+            # Check for presence of line items before trying checkout
+            has_items = False
+            try:
+                item_count = await page.locator('form[action*="/cart"] [name="updates[]"], .cart-item, .cart__items').count()
+                has_items = item_count > 0
+            except Exception:
+                pass
+            if has_items:
+                # Try to adjust quantity to 2 if possible before checkout
+                try:
+                    qty_input = page.locator('form[action*="/cart"] input[name="updates[]"], input[type="number"][name*="update"]').first
+                    if await qty_input.count() > 0 and await qty_input.is_visible(timeout=500):
+                        return {
+                            "action_generation": "",
+                            "action_grounding": "",
+                            "element": {
+                                "center_point": (0, 0),
+                                "description": "Quantity",
+                                "tag_with_role": "input",
+                                "box": [0, 0, 0, 0],
+                                "selector": qty_input,
+                                "tag": "input",
+                            },
+                            "action": "TYPE",
+                            "value": "2",
+                        }
+                except Exception:
+                    pass
+                cart_checkout = page.locator('button:has-text("Checkout"), a[href*="/checkout"]').first
+                if await cart_checkout.count() > 0 and await cart_checkout.is_visible(timeout=1000):
+                    return await _pred_from_locator(cart_checkout, "Checkout", "button")
+        except Exception:
+            pass
+        # If nothing found, return NO-OP to advance
+        return {"action_generation": "", "action_grounding": "", "element": None, "action": "NONE", "value": ""}
+
+    async def _maybe_complete_and_extract(self) -> dict | None:
+        """Detect a generic completion (e.g., checkout) and extract results. Returns TERMINATE prediction if done."""
+        try:
+            url = self.page.url
+        except Exception:
+            url = ""
+        if not url:
+            return None
+        is_checkout = ("/checkout" in url) or ("checkout." in url)
+        if not is_checkout:
+            return None
+        result: dict = {"products": [], "subtotal": None, "total": None, "checkout_url": url}
+        try:
+            # Prefer an order summary region if present
+            region = self.page.locator('[aria-label*="order summary" i], section:has-text("Order summary"), aside').first
+            items = []
+            if await region.count() > 0:
+                li = region.locator("li, .product, .line-item, tr")
+                n = min(await li.count(), 5)
+                for i in range(n):
+                    node = li.nth(i)
+                    try:
+                        txt = (await node.inner_text(timeout=500) or "").strip()
+                        if not txt:
+                            continue
+                        title = txt.split("\n")[0][:80]
+                        m = re.search(r"[×x]\s*(\d+)", txt)
+                        qty = int(m.group(1)) if m else 1
+                        items.append({"title": title, "qty": qty})
+                    except Exception:
+                        continue
+                region_text = (await region.inner_text(timeout=800) or "")
+                msub = re.search(r"Subtotal\s*([$€£]\s?[0-9][0-9,.]+)", region_text, re.I)
+                mtot = re.search(r"Total\s*([$€£]\s?[0-9][0-9,.]+)", region_text, re.I)
+                result["subtotal"] = msub.group(1) if msub else None
+                result["total"] = mtot.group(1) if mtot else None
+            if not items:
+                cart_form = self.page.locator('form[action*="/cart"]').first
+                if await cart_form.count() > 0:
+                    rows = cart_form.locator(".cart__row, tr, li, .cart-item")
+                    n = min(await rows.count(), 5)
+                    for i in range(n):
+                        node = rows.nth(i)
+                        try:
+                            txt = (await node.inner_text(timeout=500) or "").strip()
+                            if not txt:
+                                continue
+                            title = txt.split("\n")[0][:80]
+                            m = re.search(r"[×x]\s*(\d+)", txt)
+                            qty = int(m.group(1)) if m else 1
+                            items.append({"title": title, "qty": qty})
+                        except Exception:
+                            continue
+            result["products"] = items
+        except Exception:
+            pass
+        self.final_result = result
+        self.logger.info(f"Completion detected. Result: {json.dumps(result, ensure_ascii=False)}")
+        return {"action_generation": "", "action_grounding": "", "element": None, "action": "TERMINATE", "value": "STOP"}
 
     def _initialize_prompts(self):
         """Initialize prompt information including dynamic action space."""
@@ -343,17 +645,14 @@ To be successful, it is important to follow the following rules:
             except:
                 self.logger.info(
                     "The active tab was closed. Will switch to the last page (or open a new default google page)")
-                if self.session_control['context'].pages:
-                    self.page = self.session_control['context'].pages[-1]
-                    await self.page.bring_to_front()
-                    self.logger.info(f"Switched the active tab to: {self.page.url}")
-                else:
-                    self.page = await self.session_control['context'].new_page()
-                    try:
-                        await self.page.goto("https://www.google.com/", wait_until="load")
-                    except Exception as e:
-                        self.logger.info(f"Failed to navigate to Google: {e}")
-                    self.logger.info(f"Switched the active tab to: {self.page.url}")
+                try:
+                    ctx = self.session_control['context']
+                    if ctx and ctx.pages:
+                        self.page = ctx.pages[-1]
+                        await self.page.bring_to_front()
+                        self.logger.info(f"Switched the active tab to: {self.page.url}")
+                except Exception:
+                    pass
 
     def save_action_history(self, filename="action_history.txt"):
         """Save the history of taken actions to a file in the main path."""
@@ -395,19 +694,69 @@ To be successful, it is important to follow the following rules:
             except Exception:
                 # Defer engine errors to first use to allow construction under tests without API keys
                 self.engine = None
-        self.playwright = await async_playwright().start()
+        # Lazy import to respect test stubs in sys.modules
+        pa = importlib.import_module("playwright.async_api")
+        self.playwright = await pa.async_playwright().start()
         # Runtime provider (local vs CDP/browserbase)
         runtime = self.config.get("runtime", {}) or {}
         provider = str(runtime.get("provider", "local")).lower()
         cdp_url = runtime.get("cdp_url")
-        headers = runtime.get("headers", {}) or {}
+        headers = runtime.get("headers")
         if isinstance(cdp_url, str):
             cdp_url = os.path.expandvars(cdp_url)
+        # Normalize headers: pass dict when possible; retry with array fallback if needed
+        headers_out = None
         if isinstance(headers, dict):
-            headers = {k: os.path.expandvars(v) if isinstance(v, str) else v for k, v in headers.items()}
+            headers_out = {k: os.path.expandvars(v) if isinstance(v, str) else v for k, v in headers.items()} or None
+        elif isinstance(headers, list):
+            headers_out = headers or None
+
+        # Resolve Browserbase session if requested
+        if provider == "browserbase" and not cdp_url and bb_create is not None:
+            # Read project_id and optional api_base
+            project_id = runtime.get("project_id") or os.getenv("BROWSERBASE_PROJECT_ID")
+            api_base = runtime.get("api_base") or os.getenv("BROWSERBASE_API_BASE")
+            session_options = runtime.get("session_options") or {}
+            # Expand environment references if provided like "${VAR}"
+            if isinstance(project_id, str):
+                project_id = os.path.expandvars(project_id)
+            if isinstance(api_base, str):
+                api_base = os.path.expandvars(api_base)
+            # Expand any env vars within session_options recursively
+            def _expand(v):
+                import os as _os
+                if isinstance(v, str):
+                    return _os.path.expandvars(v)
+                if isinstance(v, dict):
+                    return {k: _expand(val) for k, val in v.items()}
+                if isinstance(v, list):
+                    return [_expand(x) for x in v]
+                return v
+            if isinstance(session_options, dict):
+                session_options = _expand(session_options)
+            try:
+                pid, api_key = bb_resolve(project_id, os.getenv("BROWSERBASE_API_KEY"))  # type: ignore
+                cdp_url, session_id = bb_create(pid, api_key, api_base=api_base, session_options=session_options)  # type: ignore
+                self._bb_session_id = session_id
+                self._bb_api_key = api_key
+                try:
+                    self.logger.info(f"Browserbase session created: session_id={session_id} cdp_url={cdp_url}")
+                except Exception:
+                    pass
+            except Exception as e:
+                raise RuntimeError(f"Failed to create Browserbase session: {e}")
 
         if provider in ("cdp", "browserbase") and cdp_url:
-            self.session_control['browser'] = await self.playwright.chromium.connect_over_cdp(cdp_url, headers=headers)
+            try:
+                self.session_control['browser'] = await self.playwright.chromium.connect_over_cdp(cdp_url, headers=headers_out)
+            except Exception:
+                # Fallback to array of {name,value}
+                headers_array = None
+                if isinstance(headers, dict):
+                    headers_array = [{"name": k, "value": os.path.expandvars(v) if isinstance(v, str) else v} for k, v in headers.items()] or None
+                elif isinstance(headers, list):
+                    headers_array = headers or None
+                self.session_control['browser'] = await self.playwright.chromium.connect_over_cdp(cdp_url, headers=headers_array)
             # Use an existing remote context if available, otherwise create one
             ctx = None
             try:
@@ -430,16 +779,25 @@ To be successful, it is important to follow the following rules:
                                                                              viewport=self.config['browser']['viewport'])
 
         self.session_control['context'].on("page", self.page_on_open_handler)
-        await self.session_control['context'].new_page()
-
-        if self.config["basic"]["crawler_mode"] is True:
-            await self.session_control['context'].tracing.start(screenshots=True, snapshots=True)
-
+        p = await self.session_control['context'].new_page()
+        # Ensure viewport emulation is set when connecting over CDP (may default to None)
         try:
-            await self.page.goto(
-                self.config['basic']['default_website'] if website is None else website,
-                wait_until="load")
-            self.logger.info(f"Loaded website: {self.config['basic']['default_website']}")
+            if not p.viewport_size:
+                await p.set_viewport_size(self.config['browser']['viewport'])
+        except Exception:
+            pass
+
+        # Optional crawler_mode: start tracing only when explicitly enabled
+        try:
+            if bool((self.config.get("basic") or {}).get("crawler_mode", False)):
+                await self.session_control['context'].tracing.start(screenshots=True, snapshots=True)
+        except Exception:
+            pass
+
+        target_url = self.config['basic']['default_website'] if website is None else website
+        try:
+            await self.page.goto(target_url, wait_until="domcontentloaded")
+            self.logger.info(f"Loaded website: {target_url}")
         except Exception as e:
             self.logger.info("Failed to fully load the webpage before timeout")
             self.logger.info(e)
@@ -500,6 +858,49 @@ To be successful, it is important to follow the following rules:
 
     async def perform_action(self, target_element=None, action_name=None, value=None, target_coordinates=None,
                              element_repr=None):
+        # Repeat/no-progress guard: suppress repeated CLICK on the same URL and nudge scroll
+        try:
+            _url_now = self.page.url
+        except Exception:
+            _url_now = ""
+        _target_key = f"{action_name}|{element_repr or ''}".strip()
+        if getattr(self, "_last_url", None) is None:
+            self._last_url = ""
+        if getattr(self, "_last_target_key", None) is None:
+            self._last_target_key = ""
+        if getattr(self, "_repeat_clicks", None) is None:
+            self._repeat_clicks = 0
+        if _url_now == self._last_url and _target_key and _target_key == self._last_target_key and action_name == "CLICK":
+            self._repeat_clicks += 1
+        else:
+            self._repeat_clicks = 0
+        if self._repeat_clicks >= 1 and action_name == "CLICK":
+            # If we've already nudged once and still repeating, escalate to macro fallback
+            if self._repeat_clicks >= 2:
+                try:
+                    macro_pred = await self._macro_next_action()
+                    # Execute macro action immediately to break the loop
+                    exec_msg = await self.perform_action(
+                        target_element=macro_pred.get("element"),
+                        action_name=macro_pred.get("action"),
+                        value=macro_pred.get("value"),
+                        target_coordinates=None,
+                        element_repr=(macro_pred.get("element") or {}).get("description") if macro_pred.get("element") else None,
+                    )
+                    return exec_msg
+                except Exception as _e:
+                    pass
+            # Otherwise, do a nudge scroll and rescan next step
+            try:
+                await self.page.evaluate("window.scrollBy(0, Math.min(window.innerHeight * 0.6, 600));")
+            except Exception:
+                pass
+            auto_msg = f"Auto-nudge: suppressed repeat of {action_name} {element_repr}; scrolled"
+            self.taken_actions.append(auto_msg)
+            # Update guard state and return without executing the repeated action
+            self._last_url = _url_now
+            self._last_target_key = _target_key
+            return auto_msg
 
         if self.config["agent"]["grounding_strategy"] == "pixel_2_stage":
             selector = "pixel_coordinates"
@@ -577,7 +978,16 @@ To be successful, it is important to follow the following rules:
             await page.go_forward()
             self.logger.info("Navigated forward")
         elif action_name == "GOTO" and value:
-            await page.goto(value, wait_until="load")
+            # Normalize to absolute URL if relative
+            try:
+                if not re.match(r"^[a-zA-Z]+://", str(value)):
+                    from urllib.parse import urlparse
+                    cur = urlparse(page.url)
+                    origin = f"{cur.scheme}://{cur.netloc}" if cur.scheme and cur.netloc else ""
+                    value = origin + str(value)
+            except Exception:
+                pass
+            await page.goto(value, wait_until="domcontentloaded")
             self.logger.info(f"Navigated to {value}")
         elif action_name == "PRESS ENTER" and selector:
             if selector == "pixel_coordinates":
@@ -614,6 +1024,17 @@ To be successful, it is important to follow the following rules:
             new_action += ": " + value
 
         # self.dev_logger.info(new_action)
+        # Update repeat guard state and append action for runner parity
+        try:
+            self._last_url = self.page.url
+        except Exception:
+            pass
+        self._last_target_key = _target_key
+        # Runner path calls perform_action directly; ensure actions are recorded
+        try:
+            self.taken_actions.append(new_action)
+        except Exception:
+            pass
         return new_action
 
     async def predict(self):
@@ -625,12 +1046,28 @@ To be successful, it is important to follow the following rules:
         self.time_step += 1
 
         try:
-            await self.session_control["active_page"].wait_for_load_state('load')
+            await self.session_control["active_page"].wait_for_load_state('domcontentloaded')
         except Exception as e:
             pass
+        # Auto-dismiss overlays (cookie banners, modals) to surface targets
+        try:
+            await auto_dismiss_overlays(self.page, max_clicks=2)
+        except Exception:
+            pass
 
-        elements = await get_interactive_elements_with_playwright(self.page,
-                                                                  self.config['browser']['viewport'])
+        # Completion gate: if on checkout (or equivalent), extract results and terminate
+        try:
+            maybe_done = await self._maybe_complete_and_extract()
+            if maybe_done:
+                self.predictions.append(maybe_done)
+                return maybe_done
+        except Exception:
+            pass
+        scan_t0 = time.time()
+        elements = await get_interactive_elements_with_playwright(
+            self.page, self.config['browser']['viewport']
+        )
+        scan_ms = int((time.time() - scan_t0) * 1000)
 
         '''
              0: center_point =(x,y)
@@ -647,7 +1084,7 @@ To be successful, it is important to follow the following rules:
         elements = [{**x, "idx": i, "option": generate_option_name(i)} for i, x in enumerate(elements)]
 
         # In crawler mode, get random link and click on it
-        if self.config["basic"]["crawler_mode"] is True:
+        if bool((self.config.get("basic") or {}).get("crawler_mode", False)):
             if self.time_step > self.config["basic"]["crawler_max_steps"]:
                 self.logger.info("Crawler reached max steps, going to stop")
                 self.complete_flag = True
@@ -682,21 +1119,26 @@ To be successful, it is important to follow the following rules:
         except Exception as e:
             self.logger.info(f"Mark page script error {e}")
 
-        # Generate choices for the prompt
+        # Heuristic-first: try a macro step immediately if it can make obvious progress
+        try:
+            macro_pred = await self._macro_next_action()
+            if macro_pred and macro_pred.get("action") not in [None, "", "NONE"]:
+                self.predictions.append(macro_pred)
+                return macro_pred
+        except Exception:
+            pass
 
-        # , self.config['basic']['default_task'], self.taken_actions
-        choices = format_choices(elements)
-        options = format_options(choices)
+        # Generate choices for the prompt (batched for parity with demo)
+        include_dom = bool((self.config.get("experiment") or {}).get("include_dom_in_choices", False))
+        exp_cfg = self.config.get("experiment", {}) or {}
+        top_k = int(exp_cfg.get("top_k", 50))
+        fixed_choice_batch_size = int(exp_cfg.get("fixed_choice_batch_size", 22))
+        dynamic_choice_batch_size = int(exp_cfg.get("dynamic_choice_batch_size", 0))
+        if top_k > 0:
+            elements = elements[:top_k]
 
-        # print("\n\n",choices)
-        prompt = self.generate_prompt(task=self.tasks[-1], previous=self.taken_actions, choices=choices)
-        # print("\n\n",prompt)
-
-        # Logging prompt for debugging
-
-        # Capture a screenshot for the current state of the webpage, if required by the model
+        # Capture a screenshot for the current state of the webpage
         screenshot_path = os.path.join(self.main_path, 'screenshots', f'screen_{self.time_step}.png')
-        self.logger.info(screenshot_path)
         try:
             await self.page.screenshot(path=screenshot_path)
         except Exception as e:
@@ -704,78 +1146,82 @@ To be successful, it is important to follow the following rules:
 
         terminal_width = 10
         self.logger.info(f"Step - {self.time_step}\n{'-' * terminal_width}\nAction Generation ➡️")
-        # for prompt_part in prompt:
         self.logger.info("TASK: " + self.tasks[-1])
         self.logger.info("Previous:")
         for action in self.taken_actions:
             self.logger.info(action)
-
-        output0 = self.engine.generate(prompt=prompt, image_path=self.screenshot_path, turn_number=0)
-
-        terminal_width = 10
         self.logger.info("-" * terminal_width)
-        self.logger.info("🤖 Action Generation Output 🤖")
-
-        for line in output0.split('\n'):
-            self.logger.info(line)
-
-        terminal_width = 10
-        self.logger.info("-" * (terminal_width))
+        self.logger.info("One-turn mode: generating structured decision in a single call.")
+        self.logger.info("-" * terminal_width)
         if self.config["agent"]["grounding_strategy"] == "pixel_2_stage":
 
-            choice_text = f"Action Grounding ➡️" + "\n" + options
-            for line in choice_text.split('\n'):
-                self.logger.info(line)
-
-            output = output0
-
-            pred_element_label, pred_action, pred_value = postprocess_action_lmm_pixel(output)
-
-            pred_element = pred_element_label
-            # Log the prediction result
-            self.logger.debug(f"Retrieved Answer")
-            self.logger.debug(f"Predicted Element: {pred_element}")
-            self.logger.debug(f"Action: {pred_action}")
-            self.logger.debug(f"Value: {pred_value}")
-
-            # Call a GUI visual grounding model to get the pixel coordinates. For example, UGround, CogAgent, SeeClick.
-            pred_coordinates = None
-
-            prediction = {"action_generation": output0, "action_grounding": output, "element": None,
-                          "action": pred_action, "value": pred_value, "coordinates": pred_coordinates,
+            # For pixel mode, keep current behavior minimal (not commonly used here)
+            pred_element_label, pred_action, pred_value = postprocess_action_lmm_pixel("")
+            prediction = {"action_generation": "", "action_grounding": "", "element": None,
+                          "action": pred_action, "value": pred_value, "coordinates": None,
                           "description": pred_element_label}
 
         else:
-            choice_text = f"Action Grounding ➡️" + "\n" + options
-            choice_text = choice_text.replace("\n\n", "")
-
-            for line in choice_text.split('\n'):
-                self.logger.info(line)
-
-            output = self.engine.generate(prompt=prompt, image_path=self.screenshot_path, turn_number=1,
-                                          ouput_0=output0)
-            self.logger.info("🤖 Action Grounding Output 🤖")
-            for line in output.split('\n'):
-                self.logger.info(line)
-
-            pred_element_label, pred_action, pred_value = postprocess_action_lmm(output)
-
-            if len(pred_element_label) in [1, 2]:
-                element_id = get_index_from_option_name(pred_element_label)
+            num_choices = len(elements)
+            if num_choices == 0:
+                prediction = await self._macro_next_action()
+                self.predictions.append(prediction)
+                return prediction
+            if dynamic_choice_batch_size > 0:
+                step_length = max(1, int(dynamic_choice_batch_size))
             else:
-                element_id = None
-            if element_id is not None and element_id < len(elements):
-                pred_element = elements[element_id]
-            else:
-                pred_element = None
-            # Log the prediction result
-            self.logger.debug(f"Retrieved Answer")
-            self.logger.debug(f"Predicted Element: {pred_element}")
-            self.logger.debug(f"Action: {pred_action}")
-            self.logger.debug(f"Value: {pred_value}")
+                step_length = max(1, int(min(num_choices, fixed_choice_batch_size)))
+            prediction = None
+            llm_ms_total = 0
+            for start in range(0, num_choices, step_length):
+                end = min(num_choices, start + step_length)
+                batch = elements[start:end]
+                choices = format_choices(batch, include_dom=include_dom)
+                options = format_options(choices)
+                choice_text = f"Action Grounding ➡️" + "\n" + options
+                for line in choice_text.split('\n'):
+                    self.logger.info(line)
+                prompt = self.generate_prompt(task=self.tasks[-1], previous=self.taken_actions, choices=choices)
+                t_llm0 = time.time()
+                output = await self._generate_with_timeout(
+                    prompt=prompt,
+                    image_path=self.screenshot_path,
+                    turn_number=1,
+                    ouput_0="",
+                )
+                llm_ms_total += int((time.time() - t_llm0) * 1000)
+                self.logger.info("🤖 Action Grounding Output 🤖")
+                if output:
+                    for line in output.split('\n'):
+                        self.logger.info(line)
 
-            prediction = {"action_generation": output0, "action_grounding": output, "element": pred_element,
-                          "action": pred_action, "value": pred_value}
+                if not output:
+                    # LLM timed out → use fallback macro for this step
+                    prediction = await self._macro_next_action()
+                    self.logger.info(f"metrics: scan_ms={scan_ms} llm_ms={llm_ms_total} macro_used=true num_candidates={num_choices}")
+                    self.predictions.append(prediction)
+                    return prediction
+
+                pred_element_label, pred_action, pred_value = postprocess_action_lmm(output)
+                local_idx = get_index_from_option_name(pred_element_label) if len(pred_element_label) in [1, 2] else None
+                if local_idx is not None and 0 <= local_idx < len(batch) and pred_action.strip() in [
+                    "CLICK", "SELECT", "TYPE", "PRESS ENTER", "HOVER", "TERMINATE"]:
+                    pred_element = batch[local_idx]
+                    prediction = {"action_generation": "", "action_grounding": output, "element": pred_element,
+                                  "action": pred_action, "value": pred_value}
+                    break
+                elif pred_action.strip() in ["PRESS ENTER", "TERMINATE"]:
+                    prediction = {"action_generation": "", "action_grounding": output, "element": None,
+                                  "action": pred_action, "value": pred_value}
+                    break
+            if prediction is None:
+                # No actionable choice from batches → use fallback macro
+                prediction = await self._macro_next_action()
+            # metrics line (no-op if llm_ms_total==0)
+            try:
+                self.logger.info(f"metrics: scan_ms={scan_ms} llm_ms={llm_ms_total} macro_used=false num_candidates={num_choices}")
+            except Exception:
+                pass
 
         self.predictions.append(prediction)
 
@@ -825,7 +1271,7 @@ To be successful, it is important to follow the following rules:
                 self.continuous_no_op = 0
             else:
                 self.continuous_no_op += 1
-            if self.config["basic"]["crawler_mode"] is True:
+            if bool((self.config.get("basic") or {}).get("crawler_mode", False)):
                 await self.stop_playwright_tracing()
                 await self.save_traces()
 
@@ -850,19 +1296,24 @@ To be successful, it is important to follow the following rules:
         try:
             close_context = self.session_control['context']
             self.session_control['context'] = None
-            await close_context.close()
-            self.logger.info("Browser context closed.")
+            if close_context:
+                await close_context.close()
+                self.logger.info("Browser context closed.")
         except Exception as e:
-            self.logger.info(e)
+            # Quiet teardown failures
+            self.logger.info(f"Context close skipped: {e}")
 
         final_json = {"task": self.tasks, "website": self.config["basic"]["default_website"],
                       "num_step": len(self.taken_actions), "action_history": self.taken_actions}
 
         def locator_serializer(obj):
             """Convert non-serializable objects to a serializable format."""
-            if isinstance(obj, Locator):
-                # Assuming Locator has attributes 'frame' and 'selector' you want to serialize
-                return str(obj)
+            try:
+                from playwright.async_api import Locator as _Locator  # type: ignore
+                if isinstance(obj, _Locator):
+                    return str(obj)
+            except Exception:
+                pass
             raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
 
         # Using the custom default function in json.dump
@@ -874,6 +1325,19 @@ To be successful, it is important to follow the following rules:
         self.logger.info("Agent stopped.")
 
         saveconfig(self.config, os.path.join(self.main_path, 'config.toml'))
+
+        # Close Browserbase session if we created one
+        try:
+            if self._bb_session_id and bb_close is not None and self._bb_api_key:
+                bb_close(self._bb_session_id, self._bb_api_key)  # type: ignore
+        except Exception:
+            pass
+        # Stop Playwright
+        try:
+            if getattr(self, "playwright", None):
+                await self.playwright.stop()
+        except Exception:
+            pass
 
     def clear_action_history(self):
         """

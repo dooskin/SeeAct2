@@ -10,18 +10,20 @@ default_website = "https://www.google.com/"
 task_file_path = "../data/online_tasks/sample_tasks.json"
 overwrite = false
 top_k = 50
-fixed_choice_batch_size = 17
-dynamic_choice_batch_size=1600
+fixed_choice_batch_size = 22
+dynamic_choice_batch_size=0
 max_continuous_no_op = 2
 max_op = 20
 highlight = false
-monitor = true
+monitor = false
 dev_mode=false
+include_dom_in_choices = false
 
 [openai]
 rate_limit = -1
-model = "gpt-4o"
+model = "gpt-4o-mini"
 temperature = 0
+timeout_sec = 20
 
 [oss_model]
 
@@ -31,8 +33,8 @@ tracing = false
 locale="en-US"
 geolocation.longitude=39.99542778404405
 geolocation.latitude=-83.0068669912263
-viewport.width = 1280
-viewport.height = 720
+viewport.width = 1024
+viewport.height = 600
 trace.screenshots = true
 trace.snapshots = true
 trace.sources = true
@@ -48,3 +50,11 @@ backoff_max_sec = 15.0
 task_timeout_sec = 180
 metrics_dir = "../runs"
 
+[macros]
+product_href_patterns = ["/products", "/product"]
+product_section_selectors = ["main", "section[role='main']"]
+exclude_regions.bottom_fraction = 0.2
+exclude_regions.top_fraction = 0.0
+variant_labels = ["size", "color", "variant", "style"]
+atc_selectors = ["button[name*='add']", "button:has-text('add to cart')", "form[action*='/cart/add'] button[type='submit']"]
+checkout_selectors = ["button:has-text('checkout')", "a[href*='/checkout']"]

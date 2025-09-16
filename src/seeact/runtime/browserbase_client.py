@@ -51,7 +51,7 @@ def resolve_credentials(project_id: Optional[str], api_key: Optional[str]) -> Tu
     return pid, key
 
 
-def create_session(project_id: str, api_key: str, *, api_base: Optional[str] = None, timeout_sec: int = 30) -> Tuple[str, Optional[str]]:
+def create_session(project_id: str, api_key: str, *, api_base: Optional[str] = None, timeout_sec: int = 30, session_options: Optional[Dict[str, Any]] = None) -> Tuple[str, Optional[str]]:
     base = api_base or os.getenv("BROWSERBASE_API_BASE", DEFAULT_API_BASE)
     url = f"{base.rstrip('/')}/sessions"
     headers = {
@@ -60,6 +60,12 @@ def create_session(project_id: str, api_key: str, *, api_base: Optional[str] = N
         "Accept": "application/json",
     }
     payload: Dict[str, Any] = {"projectId": project_id}
+    if isinstance(session_options, dict):
+        try:
+            # Shallow merge session options provided by caller. Browserbase will ignore unknown keys.
+            payload.update(session_options)
+        except Exception:
+            pass
     resp = requests.post(url, headers=headers, json=payload, timeout=timeout_sec)
     if resp.status_code // 100 != 2:
         raise BrowserbaseError(f"Failed to create Browserbase session: {resp.status_code} {resp.text}")

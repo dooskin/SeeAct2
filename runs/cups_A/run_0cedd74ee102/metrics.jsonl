@@ -1,0 +1,3 @@
+{"event": "run_start", "run_id": "0cedd74ee102", "concurrency": 1, "num_tasks": 1, "config_path": "src/seeact/config/runner_browserbase.toml", "ts": 1757970225.1244512}
+{"event": "task_retry", "run_id": "0cedd74ee102", "worker_id": 0, "task_id": "cups_checkout_01", "attempt": 1, "delay_sec": 1.5, "error": "IndentationError", "message": "unexpected indent (agent.py, line 980)", "persona_id": null, "ts": 1757970225.129017}
+{"event": "run_complete", "run_id": "0cedd74ee102", "ts": 1757970227.6459808}

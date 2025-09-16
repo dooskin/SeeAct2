@@ -122,7 +122,23 @@ async def run_single_task(task: Dict[str, Any], cfg: Dict[str, Any], run_id: str
             steps += 1
         await agent.stop()
         t1 = time.time()
-        await sink.write({"event": "task_complete", "run_id": run_id, "worker_id": worker_id, "task_id": task_id, "duration_ms": int((t1 - t0) * 1000), "steps": steps, "success": True, "persona_id": task.get("_persona_id"), "ts": t1})
+        result_payload = None
+        try:
+            result_payload = getattr(agent, "final_result", None)
+        except Exception:
+            result_payload = None
+        await sink.write({
+            "event": "task_complete",
+            "run_id": run_id,
+            "worker_id": worker_id,
+            "task_id": task_id,
+            "duration_ms": int((t1 - t0) * 1000),
+            "steps": steps,
+            "success": True,
+            "result": result_payload,
+            "persona_id": task.get("_persona_id"),
+            "ts": t1
+        })
     except Exception as e:
         t1 = time.time()
         await sink.write({"event": "task_error", "run_id": run_id, "worker_id": worker_id, "task_id": task_id, "error": type(e).__name__, "message": str(e), "persona_id": task.get("_persona_id"), "ts": t1})
@@ -134,13 +150,28 @@ async def run_single_task(task: Dict[str, Any], cfg: Dict[str, Any], run_id: str
         raise
 
 async def worker_loop(idx: int, queue: asyncio.Queue, cfg: RunnerConfig, full_cfg: Dict[str, Any], sink: JsonlMetricsSink, run_id: str):
+    # NOTE: Potential future optimization (commented):
+    # To reduce Browserbase cold-start time and avoid burst rate limits, we can reuse
+    # a single Browserbase session (CDP URL) per worker. The rough sketch:
+    #
+    # from seeact.runtime.browserbase_client import resolve_credentials as bb_resolve, create_session as bb_create
+    # bb_cdp_url = None
+    # runtime = (full_cfg.get("runtime") or {})
+    # if str(runtime.get("provider","")) == "browserbase":
+    #     try:
+    #         pid, api_key = bb_resolve(runtime.get("project_id"), None)
+    #         bb_cdp_url, bb_session_id = bb_create(pid, api_key, api_base=runtime.get("api_base"), session_options=runtime.get("session_options"))
+    #     except Exception:
+    #         bb_cdp_url = None
+    #
+    # And pass this CDP URL into SeeActAgent (e.g., by injecting it into full_cfg or via env) so
+    # each task connects to the existing browser instead of creating a new session.
+    # This is intentionally not enabled now to keep behavior unchanged; revisit when ready.
     while True:
-        try:
-            task = await asyncio.wait_for(queue.get(), timeout=1.0)
-        except asyncio.TimeoutError:
-            if queue.empty():
-                return
-            continue
+        task = await queue.get()
+        if task is None:
+            queue.task_done()
+            break
         attempts = 0
         while attempts <= cfg.max_retries:
             try:
@@ -174,6 +205,10 @@ async def run_pool(config_path: Path, tasks_path: Optional[Path], overrides: Opt
     if overrides:
         for k, v in overrides.items():
             setattr(rc, k, v)
+    # Honor tasks_path override if supplied
+    if overrides and overrides.get("tasks_path") and rc.tasks_path is None:
+        tp = overrides.get("tasks_path")
+        rc.tasks_path = tp if isinstance(tp, Path) else Path(str(tp))
     if rc.tasks_path is None:
         raise FileNotFoundError("Tasks file not configured. Pass --tasks or set [experiment].task_file_path in the config.")
     tasks_path_resolved = Path(rc.tasks_path)
@@ -185,7 +220,9 @@ async def run_pool(config_path: Path, tasks_path: Optional[Path], overrides: Opt
             tasks_path_resolved = (base_dir / tasks_path_resolved).resolve()
     if not tasks_path_resolved.exists():
         raise FileNotFoundError(f"Tasks file not found: {tasks_path_resolved}")
-    tasks = json.loads(tasks_path_resolved.read_text(encoding="utf-8"))
+    tasks_raw = json.loads(tasks_path_resolved.read_text(encoding="utf-8"))
+    if not isinstance(tasks_raw, list):
+        tasks_raw = [tasks_raw]
     personas_map: Optional[Dict[str, List[Dict[str, Any]]]] = None
     personas_path = rc.personas_path
     if overrides and overrides.get("personas_path"):
@@ -242,14 +279,24 @@ async def run_pool(config_path: Path, tasks_path: Optional[Path], overrides: Opt
     out_dir = rc.metrics_dir / f"run_{run_id}"
     sink = JsonlMetricsSink(out_dir, verbose=rc.verbose)
     queue: asyncio.Queue = asyncio.Queue()
-    for t in tasks:
+    enqueued = 0
+    for t in tasks_raw:
+        if t is None:
+            continue
+        if not isinstance(t, dict):
+            # Coerce minimal task shape
+            t = {"task_id": str(t), "website": (cfg.get("basic") or {}).get("default_website"), "confirmed_task": (cfg.get("basic") or {}).get("default_task")}
         p = pick_persona_for_task(t)
         if p:
             t = dict(t)
             t["_persona_id"] = p.get("id")
             t["_persona"] = p.get("data")
         queue.put_nowait(t)
-    await sink.write({"event": "run_start", "run_id": run_id, "concurrency": rc.concurrency, "num_tasks": len(tasks), "config_path": str(config_path), "ts": time.time()})
+        enqueued += 1
+    # Enqueue sentinel to signal worker completion
+    for _ in range(rc.concurrency):
+        queue.put_nowait(None)
+    await sink.write({"event": "run_start", "run_id": run_id, "concurrency": rc.concurrency, "num_tasks": enqueued, "config_path": str(config_path), "ts": time.time()})
     workers = [asyncio.create_task(worker_loop(i, queue, rc, cfg, sink, run_id)) for i in range(rc.concurrency)]
     await asyncio.gather(*workers)
     await sink.write({"event": "run_complete", "run_id": run_id, "ts": time.time()})
@@ -274,6 +321,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         overrides["verbose"] = True
     if args.personas:
         overrides["personas_path"] = Path(args.personas)
+    if args.tasks:
+        overrides["tasks_path"] = Path(args.tasks)
     asyncio.run(run_pool(config_path, tasks_path, overrides))
     return 0
 

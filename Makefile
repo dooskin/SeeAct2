@@ -21,5 +21,8 @@ test-int:
 run-runner:
 	@python -m seeact.runner -c src/seeact/config/auto_mode.toml --verbose
 
+run-runner-bb:
+	@python -m seeact.runner -c src/seeact/config/runner_browserbase.toml --verbose
+
 build-personas:
 	@python -m personas.build_personas --out data/personas/personas.yaml

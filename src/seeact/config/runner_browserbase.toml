@@ -1,0 +1,66 @@
+## Runner configuration (Browserbase/CDP at scale)
+
+[basic]
+is_demo = false
+save_file_dir = "../online_results"
+default_task = "Open homepage"
+default_website = "https://example.com/"
+
+[experiment]
+task_file_path = "../data/online_tasks/sample_tasks.json"  # runner will use this if --tasks not provided
+overwrite = false
+top_k = 50
+fixed_choice_batch_size = 22
+dynamic_choice_batch_size = 0
+max_continuous_no_op = 2
+max_op = 20
+highlight = false
+monitor = false
+dev_mode = false
+include_dom_in_choices = false
+
+[agent]
+grounding_strategy = "text_choice_som"
+max_auto_op = 50
+max_continuous_no_op = 5
+highlight = false
+
+[openai]
+rate_limit = -1
+model = "gpt-4o-mini"
+temperature = 0
+timeout_sec = 20
+
+[playwright]
+save_video = false
+tracing = false
+locale = "en-US"
+viewport.width = 1024
+viewport.height = 600
+trace.screenshots = false
+trace.snapshots = false
+trace.sources = false
+
+[runtime]
+provider   = "browserbase"
+project_id = "1a0a8a6a-99be-405f-88bd-975e831706df"
+# Optional override
+# api_base = "https://api.browserbase.com/v1"
+
+[runner]
+concurrency = 25
+max_retries = 2
+backoff_base_sec = 10.0
+backoff_max_sec = 90.0
+task_timeout_sec = 300
+metrics_dir = "../runs"
+
+[macros]
+# Optional overrides for macro selectors. Defaults are robust and used if not provided.
+product_href_patterns = ["/products", "/product"]
+product_section_selectors = ["main", "section[role='main']"]
+exclude_regions.bottom_fraction = 0.2
+exclude_regions.top_fraction = 0.0
+variant_labels = ["size", "color", "variant", "style"]
+atc_selectors = ["button[name*='add']", "button:has-text('add to cart')", "form[action*='/cart/add'] button[type='submit']"]
+checkout_selectors = ["button:has-text('checkout')", "a[href*='/checkout']"]

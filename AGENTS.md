@@ -35,10 +35,28 @@
 - `tests/test_shopping_flow_smoke.py`: Deterministic shopping journey using stubbed Playwright and a scripted model; validates multi‑turn loop.
 
 ## Runtime & Loop Unification
-- The same multi‑turn loop now runs for `local`, `cdp`, and `browserbase` providers.
-- Browserbase sessions are created via REST, connected via CDP, and closed at the end of a run.
-- Before element scanning, the loop tries to auto‑dismiss overlays (dialogs/cookie banners) to surface hidden targets.
-- Choices include compact DOM snippets to aid grounding.
+- The same one‑turn decision loop (plan+ground combined) now runs for `local`, `cdp`, and `browserbase` providers in both the demo CLI (`seeact.seeact`) and the package agent (`seeact.agent.SeeActAgent`, used by the runner). This halves model latency and reduces drift.
+- Browserbase sessions are created via REST, connected over CDP, and closed at the end of a run; CDP headers and env‑style TOML values are normalized and expanded for parity across environments.
+- Before element scanning, the loop auto‑dismisses overlays (cookie banners/dialogs) to surface hidden targets on both demo and runner paths.
+- Choices can include compact DOM snippets; `[experiment].include_dom_in_choices` controls this consistently across configs.
+- Batched choices: `[experiment].top_k`, `fixed_choice_batch_size`, and `dynamic_choice_batch_size` are respected by both demo and runner agents.
+
+### Parity Policy
+- When we fix a bug or behavior in one agent/runtime (e.g., demo, local, Browserbase/CDP), we port the fix across all runtimes immediately. Examples: CDP headers normalization, env expansion for Browserbase project ID, repeat/no‑progress guard, overlay auto‑dismiss, one‑turn decision loop, and relaxed navigation waits (`domcontentloaded`).
+- Configuration flags are interpreted consistently across demo/runner: viewport, tracing, monitor/highlight off by default for unattended runs, and the experiment batching flags.
+
+### Completion & Results
+- Completion is detected generically across runtimes. When the agent reaches checkout (e.g., URL contains `/checkout` or `checkout.`), it extracts a small result payload (product titles + quantities, subtotal/total, and the checkout URL), emits a `TERMINATE` action, and stops. The runner attaches this payload to `task_complete` events.
+- The extraction is best‑effort and generic (order summary/cart rows); no site‑specific code paths.
+
+### Macros (Recipe‑Lite) without Overfitting
+- Macros prioritize structural cues (product anchors under `main`/`section[role='main']`, visible/position‑based scoring) with a light bias from task‑derived keywords. No fixed product wordlists are hardcoded.
+- Macro selectors/weights can be tuned via TOML `[macros]` (and optional per‑site overrides in the future) without code changes.
+- A small LLM timeout + macro fallback keeps progress moving even if a model call stalls.
+
+### Browserbase Options
+- We pass through any keys under `[runtime.session_options]` directly to the Browserbase sessions.create payload so you can tune reliability and speed without code changes. Common fields: `stealth`, `blockAds`, `locale`, `timezoneId`, `userAgent`, `viewport`, `extraHTTPHeaders`, optional `geolocation`, `proxy`, `extensions`.
+- The runner currently creates a session per task. A commented sketch in `seeact/runner.py` shows how to reuse a single session per worker in the future to reduce cold starts and avoid burst-rate limits. This is disabled by default to keep behavior predictable.
 
 ## Inference
 - For OpenAI models (e.g., `gpt-4o`, `gpt-4o-mini`), the official OpenAI Python client is used for multimodal chat.

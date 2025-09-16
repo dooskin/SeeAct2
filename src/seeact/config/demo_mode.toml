@@ -3,8 +3,8 @@
 [basic]
 is_demo = true
 save_file_dir = "../online_results"
-default_task ="Find pdf of paper \"GPT-4V(ision) is a Generalist Web Agent, if Grounded\" from arXiv"
-default_website = "https://www.google.com/"
+default_task = "On the Shopify store, find a men's running shoe. Use search or collection, open a product, choose size US 10 on the PDP, add 1 to cart, go to checkout and STOP before payment. Return: product title, PDP URL, price, variant, and checkout subtotal."
+default_website = "https://www.allbirds.com/collections/mens"
 
 [experiment]
 task_file_path = "../data/online_tasks/sample_tasks.json"
@@ -15,13 +15,13 @@ dynamic_choice_batch_size=1600
 max_continuous_no_op = 2
 max_op = 20
 highlight = false
-monitor = true
+monitor = false
 dev_mode=false
 include_dom_in_choices = true
 
 [openai]
 rate_limit = -1
-model = "gpt-4o"
+model = "gpt-4o-mini"
 temperature = 0
 
 [oss_model]
@@ -32,14 +32,15 @@ tracing = false
 locale="en-US"
 geolocation.longitude=39.99542778404405
 geolocation.latitude=-83.0068669912263
-viewport.width = 1280
-viewport.height = 720
+viewport.width = 1366
+viewport.height = 900
 trace.screenshots = true
 trace.snapshots = true
 trace.sources = true
 
 [runtime]
-provider = "local"
+provider   = "browserbase"
+project_id = "1a0a8a6a-99be-405f-88bd-975e831706df"
 
 [runner]
 concurrency = 5

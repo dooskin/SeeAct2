@@ -515,6 +515,15 @@ async def auto_dismiss_overlays(page, max_clicks: int = 3) -> int:
                     cand = loc.nth(i)
                     try:
                         if await cand.is_visible(timeout=500):
+                            # Do not dismiss cart drawers/overlays that contain checkout/cart text
+                            try:
+                                dialog_parent = cand.locator("xpath=ancestor::*[@role='dialog'][1]")
+                                if await dialog_parent.count() > 0:
+                                    txt = (await dialog_parent.inner_text(timeout=500) or "").lower()
+                                    if any(k in txt for k in ["checkout", "your cart", "cart subtotal", "shopping cart"]):
+                                        continue
+                            except Exception:
+                                pass
                             await cand.click(timeout=1500)
                             clicked += 1
                             acted = True

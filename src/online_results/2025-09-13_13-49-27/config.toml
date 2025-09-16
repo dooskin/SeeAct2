@@ -1,0 +1,56 @@
+[basic]
+is_demo = true
+save_file_dir = "../online_results"
+default_task = "On the Shopify store, find a men's running shoe under $120. Use search, apply price/size filters (US 10), sort by rating, open the best-rated eligible product, choose any required variant, add 1 to cart, proceed to checkout and STOP before payment. Return: product title, PDP URL, price, variant, and checkout subtotal."
+default_website = "https://www.allbirds.com/collections/mens-shoes/"
+
+[experiment]
+task_file_path = "../data/online_tasks/sample_tasks.json"
+overwrite = false
+top_k = 50
+fixed_choice_batch_size = 17
+dynamic_choice_batch_size = 1600
+max_continuous_no_op = 2
+max_op = 20
+highlight = false
+monitor = false
+dev_mode = false
+include_dom_in_choices = true
+
+[openai]
+rate_limit = -1
+model = "gpt-4o-mini"
+temperature = 0
+api_key = "Your API key here"
+
+[oss_model]
+
+[playwright]
+save_video = false
+tracing = false
+locale = "en-US"
+
+[runtime]
+provider = "browserbase"
+project_id = "1a0a8a6a-99be-405f-88bd-975e831706df"
+
+[runner]
+concurrency = 5
+max_retries = 2
+backoff_base_sec = 1.5
+backoff_max_sec = 15.0
+task_timeout_sec = 180
+metrics_dir = "../runs"
+
+[playwright.geolocation]
+longitude = 39.99542778404405
+latitude = -83.0068669912263
+
+[playwright.viewport]
+width = 1024
+height = 600
+
+[playwright.trace]
+screenshots = true
+snapshots = true
+sources = true
