@@ -1,0 +1,17 @@
+persona:
+  window_days: 30
+  min_sessions: 50
+  top_k_per_dimension: 5
+  k_anonymity: 50
+  unknown_drop_threshold: 0.7
+  temperature: 0.4
+  regenerate: false
+  sampling:
+    size: 50
+    strategy: weighted
+db:
+  url: ""
+scrape:
+  max_pages: 50
+  user_agent: "SeeAct2Bot/1.0"
+

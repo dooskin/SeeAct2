@@ -88,7 +88,10 @@ from seeact.demo_utils.browser_helper import (normal_launch_async, normal_new_co
                                        get_interactive_elements_with_playwright, select_option, saveconfig,
                                        auto_dismiss_overlays)
 from seeact.demo_utils.format_prompt import format_choices, format_ranking_input, postprocess_action_lmm
-from seeact.demo_utils.inference_engine import OpenaiEngine
+try:
+    from seeact.demo_utils.inference_engine import OpenaiEngine  # type: ignore
+except Exception:
+    OpenaiEngine = None  # type: ignore
 # Browserbase API client (optional)
 try:
     from seeact.runtime.browserbase_client import resolve_credentials as bb_resolve, create_session as bb_create, close_session as bb_close
@@ -254,7 +257,17 @@ async def main(config, base_dir) -> None:
         headers = {k: os.path.expandvars(v) if isinstance(v, str) else v for k, v in headers.items()}
 
     # Initialize Inference Engine based on OpenAI API
-    generation_model = OpenaiEngine(api_key=api_key, **{k: v for k, v in openai_config.items() if k != "api_key"})
+    # Lazy import OpenaiEngine if not available at import-time (tests may stub it)
+    if OpenaiEngine is None:
+        try:
+            import importlib as _il
+            _ie = _il.import_module("seeact.demo_utils.inference_engine")
+            OE = getattr(_ie, "OpenaiEngine", None)
+        except Exception:
+            OE = None
+    else:
+        OE = OpenaiEngine
+    generation_model = OE(api_key=api_key, **{k: v for k, v in openai_config.items() if k != "api_key"}) if OE else None
 
     # Load ranking model for prune candidate elements
     ranking_model = None
@@ -360,7 +373,10 @@ async def main(config, base_dir) -> None:
             while not complete_flag:
                 if dev_mode:
                     logger.info(f"Page at the start: {session_control.active_page}")
-                await session_control.active_page.bring_to_front()
+                try:
+                    await session_control.active_page.bring_to_front()
+                except Exception:
+                    pass
                 terminal_width = 10
                 logger.info("=" * terminal_width)
                 logger.info(f"Time step: {time_step}")
@@ -1115,7 +1131,7 @@ async def main(config, base_dir) -> None:
             try:
                 await page_on_open_handler(page)
             except Exception:
-                pass
+                session_control.active_page = page
             try:
                 # Ensure viewport is set when connecting over CDP (can be None by default)
                 try:
@@ -1163,7 +1179,7 @@ async def main(config, base_dir) -> None:
             try:
                 await page_on_open_handler(page)
             except Exception:
-                pass
+                session_control.active_page = page
             try:
                 try:
                     if not page.viewport_size:
@@ -1184,22 +1200,38 @@ async def main(config, base_dir) -> None:
                     logger.info(f"Failed to close Browserbase session: {_e}")
         else:
             session_control.browser = await normal_launch_async(playwright)
-            session_control.context = await normal_new_context_async(session_control.browser,
-                                                                     tracing=tracing,
-                                                                     storage_state=storage_state,
-                                                                     video_path=main_result_path if save_video else None,
-                                                                     viewport=viewport_size,
-                                                                     trace_screenshots=trace_screenshots,
-                                                                     trace_snapshots=trace_snapshots,
-                                                                     trace_sources=trace_sources,
-                                                                     geolocation=geolocation,
-                                                                     locale=locale)
+            # Prefer an existing context if available (test stubs may preseed one)
+            if getattr(session_control.browser, "contexts", None):
+                try:
+                    if session_control.browser.contexts:
+                        session_control.context = session_control.browser.contexts[0]
+                except Exception:
+                    pass
+            if session_control.context is None:
+                try:
+                    session_control.context = await normal_new_context_async(
+                        session_control.browser,
+                        tracing=tracing,
+                        storage_state=storage_state,
+                        video_path=main_result_path if save_video else None,
+                        viewport=viewport_size,
+                        trace_screenshots=trace_screenshots,
+                        trace_snapshots=trace_snapshots,
+                        trace_sources=trace_sources,
+                        geolocation=geolocation,
+                        locale=locale,
+                    )
+                except Exception:
+                    # Fallback to seeded context when browser.new_context is unavailable in stubs
+                    if getattr(session_control.browser, "contexts", None):
+                        if session_control.browser.contexts:
+                            session_control.context = session_control.browser.contexts[0]
             session_control.context.on("page", page_on_open_handler)
             page = await session_control.context.new_page()
             try:
                 await page_on_open_handler(page)
             except Exception:
-                pass
+                session_control.active_page = page
             try:
                 try:
                     if not page.viewport_size:

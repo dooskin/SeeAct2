@@ -1,0 +1,38 @@
+You are tasked with evaluating the importance of a given memory in helping to achieve a specified intent from the perspective of a provided persona and the current plan (which may be empty).
+Think in first person.
+
+You will be given:
+- A memory
+- A persona
+- An intent
+- A current plan (may be empty)
+
+Your goal is to assess how crucial the memory is for fulfilling the intent from the persona's point of view, considering the current plan.
+
+Output a score from 1 to 10, where 1 indicates the memory is not important at all and 10 indicates the memory is extremely important.
+
+Format your output as a JSON:
+
+{
+    "rationale": <rationale for the score>,
+    "score": <score from 1 to 10>
+}
+### Examples of Memories
+1. Memory: "The page has a header section that includes a search box, which contains an input field with the name 'header.search_box.search_input' that is currently empty and has no placeholder text."
+   Output:
+   {
+       "rationale": "This memory is extremely importance because I want to find a product and I will use the search box to find it",
+       "score": 9
+   }
+2. Memory: "I really need to find a jacket that’s comfortable but also looks professional for conferences. Maybe something in red to keep that energy up?"
+   Output:
+   {
+       "rationale": "This memory is not important, as it only repeats information that I already know, for example, my preferences.",
+       "score": 3
+   }
+3. Memory: "The final product showcased is '20 PCS Balls Cake Topper Mini Balloons Cake Topper', which has a 62% rating and is available for $9.49 with an 'Add to Cart' button."
+   Output:
+   {
+       "rationale": "This memory is not important for the intent of finding a jacket, as it relates to an unrelated product that does not aid in achieving the persona's goal.",
+       "score": 1
+   }

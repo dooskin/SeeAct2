@@ -1,0 +1,8 @@
+[SYSTEM]
+Generate one realistic e-commerce intent for this persona. 1 sentence. No quotes.
+
+[USER]
+Persona slice: device={device}, source={source}, os={operatingSystem}, age={userAgeBracket}, new={newVsReturning}, gender={gender}, geo={geo}, intent_bucket={intent}
+Site hints: {site_domain}; vocab CTAs={ctas_csv}; top collections={collections_csv}
+Heuristics: hot→specific item; warm→category+constraints; cold→browsy (“see best sellers”).
+

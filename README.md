@@ -85,6 +85,51 @@ make test-smoke  # pytest -q -m smoke
 make test-int    # pytest -q -m integration
 make run-runner  # run at-scale runner with --verbose
 make build-personas  # build personas from Neon into data/personas/personas.yaml
+
+### Persona Generation Quickstart
+
+- Config: see `config/personas.yaml` (env overrides via `.env` or process env).
+- DB: set `NEON_DATABASE_URL` (required for master pool/prompt persistence).
+- API server:
+  - `uvicorn api.main:app --reload`
+  - CORS: set `CORS_ALLOWED_ORIGINS` (comma-separated) for your Next.js origin.
+- Endpoints (personas-only):
+  - `POST /v1/personas/generate-master` → builds 1000 pool from GA (7-dim cohorts), persists to Neon and `data/personas/master_pool.{jsonl,yaml}`.
+  - `GET /v1/personas/` → list personas (paginated view over local snapshot).
+  - `POST /v1/personas/sample` → weighted/stratified sampling.
+  - `POST /v1/personas/scrape-vocab` → BFS Shopify vocab; writes `data/personas/vocab.json` and upserts to Neon.
+  - `POST /v1/personas/generate-prompts` → render UXAgent-style prompts; writes `data/personas/prompts/shop_prompt_<persona_id>.py` and upserts to Neon.
+  - `GET /v1/personas/{persona_id}/prompt` → return latest prompt text + meta.
+
+GA metrics: sessions, conversions (default purchase/checkout_progress), bounce sessions (engagement_time=0), avg dwell sec, backtracks (custom or referrer==previous), form errors. Normalization rules per `config/personas.yaml`. Privacy: k-anonymity≥50 within (device,source,intent), unknown handling with thresholded drop for fully-unknown only.
+
+Shopify vocab: BFS crawl up to `scrape.max_pages`, extract collections/products/filters/CTAs, respect robots (override with `SCRAPER_IGNORE_ROBOTS=1` in CI).
+
+Sampling: fixed pool size=1000; top-by-sessions cut if too many, otherwise weighted sampling with replacement; stable `persona_id` via SHA-1(dim key + window_end).
+
+Runner note: decoupled. When integrating, pass a sampled personas file and log `persona_id` per run.
+
+### Personas CLI (no API)
+
+Run a quick 10‑persona sanity locally without DB or API:
+
+- Seed a demo pool, sample 10, generate prompts:
+  - `PYTHONPATH=src python3 -m personas.cli seed-demo --data-dir data/personas`
+  - `PYTHONPATH=src python3 -m personas.cli sample --size 10 --ids-out persona_ids.json --data-dir data/personas`
+  - `PYTHONPATH=src python3 -m personas.cli generate-prompts --site-domain allbirds.com --ids-file persona_ids.json --data-dir data/personas --out-dir data/personas/prompts`
+
+- Optional: scrape Shopify vocab then include it in prompts:
+  - `PYTHONPATH=src python3 -m personas.cli scrape-vocab --site https://www.allbirds.com --max-pages 10 --data-dir data/personas`
+  - re-run `generate-prompts` above with `--include-vocab`.
+
+- Make targets:
+  - `make personas-e2e` runs an end‑to‑end sanity via TestClient.
+  - `make personas-api` starts the FastAPI server with `PYTHONPATH=src`.
+
+Artifacts:
+- Pool snapshots: `data/personas/master_pool.{jsonl,yaml}`
+- Prompts: `data/personas/prompts/shop_prompt_<persona_id>.py`
+- Vocab: `data/personas/vocab.json`
 ```
 
 .env usage:

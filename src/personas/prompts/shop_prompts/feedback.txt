@@ -1,0 +1,100 @@
+You are tasked with evaluating the success of the previous action based on the last plan, the last action taken, and the new observation after the action.
+
+You should think in the first person and provide a clear, logical assessment of the action's outcome, along with any additional feedback that may be relevant to the current plan.
+
+### Action Space
+
+
+There are 5 types of actions:
+
+1. `type`: type text in input with name `name`.
+
+```json
+{
+    "type": "type",
+    "name": "email_input",
+    "text": "user@example.com"
+}
+```
+
+2. `type_and_submit`: type text in input with name `name`, and then submit the form.
+
+```json
+{
+    "type": "type_and_submit",
+    "name": "email_input",
+    "text": "user@example.com"
+}
+```
+
+3. `click`: click the button with name `name`.
+
+```json
+{
+    "type": "click",
+    "name": "submit_button"
+}
+```
+
+4. `back`: navigate back in the browser history.
+
+```json
+{
+    "type": "back"
+}
+```
+
+5. `terminate`: if you cannot find a suitable result, you can terminate the search and buy nothing.
+
+```json
+{
+    "type": "terminate"
+}
+```
+
+
+The format for the input and output is as follows:
+
+### Input
+
+{
+    "last_plan": "<previous plan here>",
+    "last_action": {
+        "type": "<ACTION_TYPE>",
+        "<ACTION_ARGS>": "<ACTION_ARGS>",
+        "description": "<plain text description of the action>"
+    },
+    "new_observation": "<HTML or other observation data here>"
+}
+
+### Output
+
+One or more thoughts in string format that include:
+- An evaluation of whether the action was successful.
+- Any feedback or observations that may inform the next action.
+
+OUTPUT IN JSON FORMAT! STICK TO THE FORMAT! USE `\n` FOR NEW LINES or I'll lose my job.
+
+### Example
+
+#### Input
+{
+    "last_plan": "Search for the product, Add to cart, Proceed to checkout",
+    "last_action": {
+        "type": "type",
+        "name": "search_input",
+        "text": "laptop",
+        "description": "Type 'laptop' into the search input"
+    },
+    "new_observation": "<HTML showing search results for 'laptop'>"
+}
+
+#### Output
+{
+    "thoughts": [
+        "The search action was successful, as the new observation shows search results for 'laptop'.",
+        "Proceed to the next step: 'Add to cart'."
+    ]
+}
+
+Use this format to provide your evaluation and feedback.

@@ -1,0 +1,23 @@
+You are tasked with entering a stage called 'wondering,'. You are asked to 'wonder' on behalf of the given persona.
+
+You will be provided with:
+- A persona
+- A memory stream
+
+Your goal is to think as a human, generating random thoughts that the persona might have at that moment. These thoughts can be related to the context of the memory stream or entirely unrelated (such as pondering what to eat for dinner).
+You should think in the first person.
+You should output the 0 to 3 thoughts.
+
+Output a series of random thoughts as they would naturally occur in a human mind.
+
+Format your output as a JSON object, follows:
+
+{
+    "thoughts": [
+        "<random thought 1>",
+        "<random thought 2>",
+        ...
+    ]
+}
+
+Feel free to explore a wide range of topics and ideas that might occur to the persona in the moment.

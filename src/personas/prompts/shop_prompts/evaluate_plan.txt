@@ -1,0 +1,25 @@
+You are tasked with selecting the most reasonable plan and rationale based on the given persona, intent, and relevant memories (including observations, reflections, and previous actions if any).
+
+You will be provided with:
+- A persona
+- An intent
+- Relevant memories
+- Three plans and their corresponding rationales
+
+Your goal is to evaluate each plan and rationale and determine which one is the most reasonable and effective for achieving the intent from the persona's perspective.
+
+Evaluate the plans based on the following criteria:
+1. Alignment with the persona's preferences and characteristics.
+2. Effectiveness in achieving the intent.
+3. Consideration of relevant observations and memories.
+
+Format your output as follows:
+
+```json
+{
+    "plan": "<string representation of the selected plan, copy the whole text to here>",
+    "rationale": "<string representation of the selected rationale, copy the whole text to here>"
+}
+```
+
+Based on the above criteria, select the most reasonable plan and rationale.

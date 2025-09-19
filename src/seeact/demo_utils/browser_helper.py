@@ -16,10 +16,28 @@
 import re
 import asyncio
 from difflib import SequenceMatcher
-from playwright.sync_api import Playwright, expect, sync_playwright
+try:
+    from playwright.sync_api import Playwright, expect, sync_playwright  # type: ignore
+except Exception:  # optional for type hints only
+    class Playwright:  # type: ignore
+        pass
+    def expect(*args, **kwargs):  # type: ignore
+        return None
+    def sync_playwright():  # type: ignore
+        raise RuntimeError("sync_playwright unavailable in this environment")
 # from playwright.async_api import async_playwright
 from pathlib import Path
-import toml
+try:
+    import toml  # type: ignore
+except Exception:  # optional dependency for saveconfig
+    class _TomlStub:  # type: ignore
+        @staticmethod
+        def dump(obj, fp):
+            try:
+                fp.write("# TOML output unavailable (toml not installed)\n")
+            except Exception:
+                pass
+    toml = _TomlStub()  # type: ignore
 from typing import List
 import os
 

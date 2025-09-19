@@ -27,6 +27,9 @@ dependencies = [
   "requests>=2.31.0",
   "psycopg[binary]>=3.2",
   "PyYAML>=6.0",
+  "fastapi>=0.111",
+  "uvicorn>=0.30",
+  "pydantic>=2.7",
 ]
 
 [project.optional-dependencies]
@@ -48,4 +51,3 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
