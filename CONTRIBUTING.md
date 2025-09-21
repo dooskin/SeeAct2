@@ -113,3 +113,62 @@ Artifacts live under `PERSONAS_DATA_DIR` (default `data/personas`).
 
 Thanks for contributing and keeping the personas layer decoupled and testable!
 
+## Architecture (ASCII Overview)
+
+```
+                   +---------------------------+
+                   |        Frontend (UI)      |
+                   |  Calibrate button, charts |
+                   +------------+--------------+
+                                |
+                                |  HTTP (FastAPI)
+                                v
+                   +---------------------------+
+                   |      Personas API         |
+                   |  /v1/personas/* routes    |
+                   +------------+--------------+
+                                |
+             +------------------+------------------+
+             |                                     |
+             v                                     v
+   +---------------------+               +----------------------+
+   |  Personas Adapter   |               |   Personas Builder   |
+   | Neon / GA SQL       |               | 1,000-pool, k-anon   |
+   +----------+----------+               +----------+-----------+
+              |                                    |
+              |         Personas (1000)            |
+              +--------------------+---------------+
+                                   |
+                                   v
+                        +----------------------+
+                        | Personas Prompts     |
+                        | UXAgent-aligned      |
+                        +----------+-----------+
+                                   |
+                    +-------------------------------+
+                    | Local Snapshots (data/personas)|
+                    |  - master_pool.jsonl/yaml     |
+                    |  - prompts/                   |
+                    |  - vocab.json                 |
+                    |  - summary.json               |
+                    +-------------------------------+
+
+                                +
+                                |
+                                v
+                    +---------------------------+
+                    |   SeeAct Runner + Agent   |
+                    |  --personas YAML weights  |
+                    |  tags persona_id per task |
+                    +---------------------------+
+
+                                +
+                                |
+                                v
+                    +---------------------------+
+                    |   Neon Postgres (DB)      |
+                    |  Personas / Prompts /     |
+                    |  CohortMetrics / Vocab    |
+                    +---------------------------+
+```
+
