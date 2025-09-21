@@ -15,16 +15,14 @@
 """
 SeeAct Agent
 
-Notes on Personas (decoupled):
-- A separate module under `src/personas/` builds a GA-powered master pool (1000 personas), 
-  renders UXAgent-style prompts, and optionally scrapes Shopify vocab. It is intentionally kept
-  decoupled from this agent and the runner.
-- For local testing without the API: use the CLI
+Personas (decoupled):
+- A separate module under `src/personas/` builds a GA-powered master pool (1000 personas), renders UXAgent-style prompts, and optionally scrapes Shopify vocab. It is intentionally decoupled from the agent and runner.
+- Local (no DB) CLI:
     PYTHONPATH=src python -m personas.cli seed-demo --data-dir data/personas
     PYTHONPATH=src python -m personas.cli sample --size 10 --ids-out persona_ids.json --data-dir data/personas
-    PYTHONPATH=src python -m personas.cli generate-prompts --site-domain allbirds.com --ids-file persona_ids.json --data-dir data/personas --out-dir data/personas/prompts
-- The runner integration (future) should sample personas and log `persona_id` per run. This agent accepts
-  any prompt string produced by the personas generator without additional changes here.
+    PYTHONPATH=src python -m personas.cli generate-prompts --site-domain yourstore.com --ids-file persona_ids.json --data-dir data/personas --out-dir data/personas/prompts
+- DB-backed API build: `POST /v1/personas/generate-master` with `include_prompts=true` renders prompts for all 1000; charts data via `/v1/personas/traffic-summary` and `/v1/personas/behavior-match`.
+- Runner usage: provide a personas YAML (id→weight map) via `--personas`; the runner tags each task with `persona_id`. This agent accepts any prompt string produced by the personas generator without code changes here.
 """
 
 import json

@@ -26,13 +26,16 @@ class GenerateMasterBody(BaseModel):
     conversion_events: Optional[List[str]] = None
     include_events_extra: Optional[List[str]] = None
     dsn: Optional[str] = None
+    include_prompts: Optional[bool] = False
+    include_summary: Optional[bool] = True
+    persist_db: Optional[bool] = True
+    persist_local: Optional[bool] = True
+    site_domain: Optional[str] = None
 
 
 @router.post("/generate-master")
 def generate_master(body: GenerateMasterBody):
     dsn = resolve_dsn(body.dsn, os.getenv("NEON_DATABASE_URL") or None)
-    if not dsn:
-        raise HTTPException(status_code=400, detail="NEON_DATABASE_URL/--dsn required for master generation")
     cfg = GAConfig()
     if body.window_days is not None:
         cfg.window_days = int(body.window_days)
@@ -42,11 +45,15 @@ def generate_master(body: GenerateMasterBody):
         cfg.conversion_events = tuple(body.conversion_events)
     if body.include_events_extra:
         cfg.include_events_extra = tuple(body.include_events_extra)
-    adapter = NeonGAAdapter(dsn, cfg)
-    # Ensure tables
-    with adapter.connect() as conn:
-        ensure_tables(conn)
-    cohorts = adapter.fetch_cohorts()
+    adapter = NeonGAAdapter(dsn, cfg) if dsn else None
+    # Ensure tables if DB configured
+    if adapter:
+        with adapter.connect() as conn:
+            ensure_tables(conn)
+        cohorts = adapter.fetch_cohorts()
+    else:
+        # Local-only path cannot fetch GA; return error if no local cohorts
+        raise HTTPException(status_code=400, detail="No DSN provided; cannot fetch GA cohorts for master generation. Set NEON_DATABASE_URL or pass --dsn.")
     window_end = cfg.window_end or datetime.now(timezone.utc)
     pool = build_master_pool(
         cohorts,
@@ -54,10 +61,61 @@ def generate_master(body: GenerateMasterBody):
         k_anon=int(body.k_anonymity or 50),
         unknown_drop_threshold=float(body.unknown_drop_threshold or 0.7),
     )
-    paths = save_pool_artifacts(pool)
-    # Persist personas
-    adapter.upsert_personas(pool, window_end)
-    return {"count": len(pool), "window_end": window_end.isoformat(), "persisted": True, "sample_ids": [p["persona_id"] for p in pool[:10]], "artifacts": paths}
+    # pool_id: sha1 over window_end + window_days + conversion events
+    import hashlib, json as _json
+    pid_hasher = hashlib.sha1()
+    pid_hasher.update((window_end.isoformat() + "|" + str(cfg.window_days) + "|" + ",".join(sorted(cfg.conversion_events + cfg.include_events_extra))).encode("utf-8"))
+    pool_id = pid_hasher.hexdigest()
+    # Persist
+    artifacts = {}
+    if bool(body.persist_local if body.persist_local is not None else True):
+        artifacts = save_pool_artifacts(pool)
+        # Write a local summary stub; details may be filled below
+        base_dir = Path(os.getenv("PERSONAS_DATA_DIR") or "data/personas")
+        base_dir.mkdir(parents=True, exist_ok=True)
+        (base_dir / "pool.meta.json").write_text(_json.dumps({"pool_id": pool_id, "window_end": window_end.isoformat(), "window_days": cfg.window_days}, ensure_ascii=False, indent=2), encoding="utf-8")
+    if adapter and bool(body.persist_db if body.persist_db is not None else True):
+        adapter.upsert_personas(pool, window_end)
+    # Optionally render prompts
+    if body.include_prompts:
+        from personas.prompts import render_shop_browse_prompt, write_prompt_module
+        for p in pool:
+            txt = render_shop_browse_prompt(p, body.site_domain or "")
+            write_prompt_module(txt, p.get("persona_id", "unknown"))
+    # Optionally include summary
+    summary = None
+    if body.include_summary:
+        try:
+            # Real distributions and event rates from DB if possible
+            real_dist = adapter.fetch_distributions() if adapter else None
+            real_rates = adapter.fetch_event_rates() if adapter else None
+        except Exception:
+            real_dist = None
+            real_rates = None
+        # Synthetic from pool (weights)
+        import collections
+        syn_dist = {k: collections.Counter() for k in ["device", "source", "operatingSystem", "userAgeBracket", "newVsReturning", "gender", "geo"]}
+        total_w = 0.0
+        for p in pool:
+            w = float(p.get("weight", 0.0) or 0.0)
+            total_w += w
+            syn_dist["device"][str(p.get("device"))] += w
+            syn_dist["source"][str(p.get("source"))] += w
+            syn_dist["operatingSystem"][str(p.get("operatingSystem"))] += w
+            syn_dist["userAgeBracket"][str(p.get("userAgeBracket"))] += w
+            syn_dist["newVsReturning"][str(p.get("newVsReturning"))] += w
+            syn_dist["gender"][str(p.get("gender"))] += w
+            syn_dist["geo"][str(p.get("geo"))] += w
+        syn_dist_pct = {dim: {k: (v / total_w if total_w else 0.0) for k, v in cnt.items()} for dim, cnt in syn_dist.items()}
+        summary = {
+            "pool_id": pool_id,
+            "distributions": {"real": real_dist, "synthetic": syn_dist_pct},
+            "behavior": {"real": real_rates, "synthetic": real_rates},
+        }
+        if bool(body.persist_local if body.persist_local is not None else True):
+            base_dir = Path(os.getenv("PERSONAS_DATA_DIR") or "data/personas")
+            (base_dir / "summary.json").write_text(_json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"pool_id": pool_id, "count": len(pool), "window_end": window_end.isoformat(), "persisted_db": bool(adapter and (body.persist_db if body.persist_db is not None else True)), "persisted_local": bool(body.persist_local if body.persist_local is not None else True), "artifacts": artifacts, "summary": summary}
 
 
 @router.get("/")
@@ -118,6 +176,62 @@ def sample_personas(body: SampleBody):
     total = sum(weights) or 1
     probs = [w / total for w in weights]
     return [random.choices(items, weights=probs, k=1)[0] for _ in range(body.size)]
+
+
+def _load_pool_from_disk() -> List[Dict[str, Any]]:
+    base_dir = Path(os.getenv("PERSONAS_DATA_DIR") or "data/personas")
+    p = base_dir / "master_pool.jsonl"
+    if not p.exists():
+        return []
+    import json
+    return [json.loads(l) for l in p.read_text(encoding="utf-8").splitlines() if l.strip()]
+
+
+@router.get("/traffic-summary")
+def traffic_summary():
+    dsn = resolve_dsn(None, os.getenv("NEON_DATABASE_URL") or None)
+    if dsn:
+        adapter = NeonGAAdapter(dsn, GAConfig())
+        try:
+            dist = adapter.fetch_distributions()
+            return {"real": dist}
+        except Exception as e:
+            pass
+    # Fallback to synthetic from local pool
+    pool = _load_pool_from_disk()
+    if not pool:
+        raise HTTPException(status_code=404, detail="No local pool snapshot found")
+    import collections
+    syn_dist = {k: collections.Counter() for k in ["device", "source", "operatingSystem", "userAgeBracket", "newVsReturning", "gender", "geo"]}
+    total_w = 0.0
+    for p in pool:
+        w = float(p.get("weight", 0.0) or 0.0)
+        total_w += w
+        syn_dist["device"][str(p.get("device"))] += w
+        syn_dist["source"][str(p.get("source"))] += w
+        syn_dist["operatingSystem"][str(p.get("operatingSystem"))] += w
+        syn_dist["userAgeBracket"][str(p.get("userAgeBracket"))] += w
+        syn_dist["newVsReturning"][str(p.get("newVsReturning"))] += w
+        syn_dist["gender"][str(p.get("gender"))] += w
+        syn_dist["geo"][str(p.get("geo"))] += w
+    syn_dist_pct = {dim: {k: (v / total_w if total_w else 0.0) for k, v in cnt.items()} for dim, cnt in syn_dist.items()}
+    return {"synthetic": syn_dist_pct}
+
+
+@router.get("/behavior-match")
+def behavior_match():
+    dsn = resolve_dsn(None, os.getenv("NEON_DATABASE_URL") or None)
+    real = None
+    if dsn:
+        adapter = NeonGAAdapter(dsn, GAConfig())
+        try:
+            real = adapter.fetch_event_rates()
+        except Exception:
+            real = None
+    if real is None:
+        real = {k: 0.0 for k in GAConfig().shopify_events}
+    # Synthetic currently mirrors real (prompts encode overall CR only). Later: compute from pool weights.
+    return {"real": real, "synthetic": real}
 
 
 class ScrapeBody(BaseModel):
@@ -206,4 +320,3 @@ def get_prompt(persona_id: str, site_domain: Optional[str] = None):
     spec.loader.exec_module(mod)  # type: ignore
     text = mod.get_prompt()
     return {"persona_id": persona_id, "site_domain": site_domain, "prompt": text}
-

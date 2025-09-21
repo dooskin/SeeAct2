@@ -27,6 +27,15 @@ class GAConfig:
     include_events_extra: Tuple[str, ...] = tuple()
     window_days: int = 30
     window_end: Optional[datetime] = None
+    # Shopify events to summarize for behavior-match charts
+    shopify_events: Tuple[str, ...] = (
+        "page_view",
+        "view_item_list",
+        "view_item",
+        "add_to_cart",
+        "begin_checkout",
+        "purchase",
+    )
 
 
 DDL_STATEMENTS = [
@@ -204,6 +213,86 @@ class NeonGAAdapter:
                 out = [dict(zip(cols, row)) for row in cur.fetchall()]
                 return out
 
+    def fetch_event_rates(self) -> Dict[str, float]:
+        """Aggregate event rates for the configured Shopify events across the window.
+
+        Returns a mapping of event_name -> rate (events per session), computed as
+        distinct sessions with event / total sessions for the window.
+        """
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                start, end = _window_bounds(self.cfg)
+                events = ",".join([f"'{e}'" for e in self.cfg.shopify_events])
+                sql = f"""
+WITH base AS (
+  SELECT session_id, event_name
+  FROM {self.cfg.events_table}
+  WHERE event_timestamp >= %(start)s AND event_timestamp < %(end)s
+    AND event_name IN ({events})
+),
+session_events AS (
+  SELECT event_name, COUNT(DISTINCT session_id) AS sessions_with_event
+  FROM base GROUP BY event_name
+),
+total AS (
+  SELECT COUNT(DISTINCT session_id) AS total_sessions
+  FROM {self.cfg.events_table}
+  WHERE event_timestamp >= %(start)s AND event_timestamp < %(end)s
+)
+SELECT e.event_name, (e.sessions_with_event::double precision / NULLIF(t.total_sessions,0)) AS rate
+FROM session_events e CROSS JOIN total t;
+"""
+                cur.execute(sql, {"start": start, "end": end})
+                rates = {row[0]: float(row[1] or 0.0) for row in cur.fetchall()}
+                # Ensure all keys present
+                out = {k: float(rates.get(k, 0.0)) for k in self.cfg.shopify_events}
+                return out
+
+    def fetch_distributions(self) -> Dict[str, Dict[str, float]]:
+        """Return real traffic distributions (percentages) by key dims using sessions as weight.
+
+        Keys: device_category, session_source_medium, geo_bucket, operating_system, user_age_bracket, new_vs_returning, gender
+        """
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                start, end = _window_bounds(self.cfg)
+                sql = f"""
+WITH base AS (
+  SELECT
+    session_id,
+    MAX(device_category) AS device_category,
+    MAX(session_source_medium) AS session_source_medium,
+    MAX(operating_system) AS operating_system,
+    MAX(user_age_bracket) AS user_age_bracket,
+    MAX(new_vs_returning) AS new_vs_returning,
+    MAX(gender) AS gender,
+    MAX(CONCAT(COALESCE(geo_country,''), CASE WHEN COALESCE(geo_region,'')<>'' THEN ':'||geo_region ELSE '' END)) AS geo_bucket
+  FROM {self.cfg.events_table}
+  WHERE event_timestamp >= %(start)s AND event_timestamp < %(end)s
+  GROUP BY session_id
+),
+tot AS (SELECT COUNT(*) AS n FROM base)
+SELECT 'device_category' AS dim, device_category AS val, COUNT(*)::double precision / NULLIF((SELECT n FROM tot),0) AS pct FROM base GROUP BY device_category
+UNION ALL
+SELECT 'session_source_medium', session_source_medium, COUNT(*)::double precision / NULLIF((SELECT n FROM tot),0) FROM base GROUP BY session_source_medium
+UNION ALL
+SELECT 'geo_bucket', geo_bucket, COUNT(*)::double precision / NULLIF((SELECT n FROM tot),0) FROM base GROUP BY geo_bucket
+UNION ALL
+SELECT 'operating_system', operating_system, COUNT(*)::double precision / NULLIF((SELECT n FROM tot),0) FROM base GROUP BY operating_system
+UNION ALL
+SELECT 'user_age_bracket', user_age_bracket, COUNT(*)::double precision / NULLIF((SELECT n FROM tot),0) FROM base GROUP BY user_age_bracket
+UNION ALL
+SELECT 'new_vs_returning', new_vs_returning, COUNT(*)::double precision / NULLIF((SELECT n FROM tot),0) FROM base GROUP BY new_vs_returning
+UNION ALL
+SELECT 'gender', gender, COUNT(*)::double precision / NULLIF((SELECT n FROM tot),0) FROM base GROUP BY gender;
+"""
+                cur.execute(sql, {"start": start, "end": end})
+                out: Dict[str, Dict[str, float]] = {}
+                for dim, val, pct in cur.fetchall():
+                    d = out.setdefault(dim, {})
+                    d[str(val or 'unknown')] = float(pct or 0.0)
+                return out
+
     def upsert_personas(self, records: Iterable[Dict[str, Any]], window_end: datetime) -> int:
         with self.connect() as conn:
             cur = conn.cursor()
@@ -249,4 +338,3 @@ class NeonGAAdapter:
                 (persona_id, site_domain, prompt, float(temperature), bool(regenerated), now),
             )
             conn.commit()
-

@@ -23,6 +23,8 @@ SeeAct is an engineering-focused platform for building, running, and measuring a
 
 ## Quick Start
 
+For a deeper guide on code structure, testing, and contribution workflow, see `CONTRIBUTING.md`.
+
 1) Create environment (choose one; do not stack both)
 ```bash
 # Option A: Conda (recommended)
@@ -130,6 +132,124 @@ Artifacts:
 - Pool snapshots: `data/personas/master_pool.{jsonl,yaml}`
 - Prompts: `data/personas/prompts/shop_prompt_<persona_id>.py`
 - Vocab: `data/personas/vocab.json`
+
+### Build 1,000 Personas (Reusable Pool)
+
+Personas are built once per calibration window and reused across many experiments. There are two paths: DB‑backed (Neon) and local‑only (no DB) for quick iteration.
+
+1) DB‑backed (Neon Postgres)
+- Prereqs: set `NEON_DATABASE_URL` (and optional `GA_EVENTS_TABLE`, default `ga_events`).
+- Start API: `uvicorn api.main:app --reload` (or `make personas-api`).
+- Build pool (1000), persist, render prompts, and return summary:
+```bash
+curl -s -X POST 'http://127.0.0.1:8000/v1/personas/generate-master' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "window_days": 30,
+    "include_prompts": true,
+    "include_summary": true,
+    "persist_db": true,
+    "persist_local": true,
+    "site_domain": "yourstore.com"
+  }' | jq .
+```
+- FE charts:
+  - Real/synthetic distributions: `GET /v1/personas/traffic-summary`
+  - Behavior match (six Shopify events): `GET /v1/personas/behavior-match`
+- Artifacts also land under `PERSONAS_DATA_DIR` for reproducibility.
+
+2) Local‑only (no DB)
+- Seed a demo pool (1000), sample, and render prompts:
+```bash
+PYTHONPATH=src python -m personas.cli seed-demo --data-dir data/personas
+PYTHONPATH=src python -m personas.cli sample --size 10 --ids-out persona_ids.json --data-dir data/personas
+PYTHONPATH=src python -m personas.cli generate-prompts --site-domain yourstore.com --ids-file persona_ids.json --data-dir data/personas --out-dir data/personas/prompts
+```
+- Optional Shopify vocab:
+```bash
+PYTHONPATH=src python -m personas.cli scrape-vocab --site https://yourstore.com --max-pages 50 --data-dir data/personas
+PYTHONPATH=src python -m personas.cli generate-prompts --site-domain yourstore.com --ids-file persona_ids.json --data-dir data/personas --out-dir data/personas/prompts --include-vocab
+```
+
+3) Reuse with the runner
+- Convert the 1000 pool to a runner YAML and run tasks sampled across personas:
+```bash
+python - <<'PY'
+import json, os
+data_dir = os.path.join('data','personas')
+ids = [json.loads(l)['persona_id'] for l in open(os.path.join(data_dir,'master_pool.jsonl'), encoding='utf-8') if l.strip()]
+out = os.path.join(data_dir,'runner_personas.yaml')
+with open(out,'w',encoding='utf-8') as f:
+  f.write('personas:\n')
+  for pid in ids:
+    f.write(f'  {pid}: ' + '{weight: 1.0}\n')
+print('Wrote', out, 'count:', len(ids))
+PY
+
+python -m seeact.runner \
+  -c src/seeact/config/auto_mode.toml \
+  --tasks "$(pwd)/data/online_tasks/sample_tasks.json" \
+  --metrics-dir runs/personas_local \
+  --concurrency 4 --verbose \
+  --personas "$(pwd)/data/personas/runner_personas.yaml"
+```
+
+4) Concurrency notes
+- The runner can’t exceed the number of tasks queued; to utilize `--concurrency N`, ensure your tasks file has at least N tasks (unique `task_id`). Browserbase and model rate‑limits can also cap effective concurrency.
+
+### API Reference (Personas‑only)
+- `POST /v1/personas/generate-master` — builds 1000 pool; flags: `window_days`, `window_end?`, `include_prompts?`, `include_summary?`, `persist_db?`, `persist_local?`, `site_domain?`. Returns `{ pool_id, window_end, count, artifacts, summary }`.
+- `GET /v1/personas/` — paginated list from local snapshot.
+- `POST /v1/personas/sample` — `{ size, strategy: weighted|stratified }` → sampled personas.
+- `POST /v1/personas/scrape-vocab` — `{ site, max_pages?, persist? }` → vocab JSON.
+- `POST /v1/personas/generate-prompts` — render prompt modules for given persona_ids; upserts PersonaPrompts when DB present.
+- `GET /v1/personas/{persona_id}/prompt` — returns UXAgent‑style prompt text.
+- `GET /v1/personas/traffic-summary` — real (DB) or synthetic distributions for charts.
+- `GET /v1/personas/behavior-match` — real vs synthetic event rates for six Shopify events.
+
+### Data Model (Neon)
+- `SegmentSnapshot(name, rule_json, breakdowns_json, window_end, PK(name,window_end))`
+- `CohortMetrics(cohort_key, sessions, conversions, bounce_sessions, avg_dwell_sec, backtracks, form_errors, window_end)`
+- `Personas(persona_id PK, payload JSONB, window_end, generated_at)`
+- `PersonaPrompts(persona_id, site_domain, prompt, temperature, regenerated, generated_at, PK(persona_id,site_domain,generated_at))`
+- `SiteVocab(site_domain, vocab JSONB, scraped_at, PK(site_domain, scraped_at))`
+
+### How 1,000 Personas Are Built
+- Aggregate GA cohorts over 7 dims → normalize device/OS/source → enforce k‑anon ≥50 within (device, source, intent) → intent buckets (hot/warm/cold) with deterministic thresholds → stable persona_id (SHA‑1 of dims + window_end) → pool of exactly 1000: top‑by‑sessions or weighted sampling with replacement.
+- Prompts are rendered deterministically via UXAgent‑aligned templates; CR and other metrics are embedded into the prompt text; optional SITE_VOCAB appended.
+
+### Make Targets
+- `make personas-api` — start FastAPI server (PYTHONPATH=src).
+- `make personas-e2e` — run end‑to‑end sanity (no DB) via TestClient.
+- `make personas-cli-demo` — seed demo pool → sample(10) → generate prompts.
+- `make personas-scrape-vocab` — scrape Shopify vocab for allbirds.com (edit target or pass CLI directly).
+
+### Troubleshooting
+- Only one worker runs despite `--concurrency N`: ensure your tasks file contains ≥N tasks; check Browserbase and model rate limits.
+- No DB snapshot: set `NEON_DATABASE_URL`; otherwise API returns local‑only artifacts and clearly states db_persisted=false.
+- FastAPI import errors: run with `PYTHONPATH=src` (or install the package with `pip install -e .`).
+
+### Build 1,000 Personas (Reusable Pool)
+
+Build once per calibration window and reuse across experiments:
+
+- DB‑backed (Neon):
+  - Set `NEON_DATABASE_URL`.
+  - `POST /v1/personas/generate-master` with knobs `{ window_days, window_end?, include_prompts?: true, include_summary?: true }`.
+  - Returns `{ pool_id, window_end, count: 1000, artifacts, summary }`.
+  - Artifacts are also written locally under `PERSONAS_DATA_DIR` (dual‑write) for reproducibility.
+
+- Local‑only (no DB):
+  - `PYTHONPATH=src python -m personas.cli seed-demo --data-dir data/personas`
+  - Generates a demo 1000‑persona pool and prompt modules for local testing.
+
+- Summary for UI charts:
+  - `GET /v1/personas/traffic-summary` → real (DB) or synthetic (local) distributions by dims.
+  - `GET /v1/personas/behavior-match` → real vs synthetic Shopify event rates.
+
+- Experiments:
+  - Sample personas (`POST /v1/personas/sample` or CLI `sample`) and pass persona_ids to your runner; log `persona_id` per run.
+  - Prompts remain decoupled: use rendered prompt text as needed without changing the agent.
 ```
 
 .env usage:
