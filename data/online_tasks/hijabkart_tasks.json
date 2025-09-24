@@ -1,0 +1,12 @@
+[
+  {
+    "task_id": "hijabkart_search_add_jerseyhijab",
+    "website": "https://hijabkart.in",
+    "confirmed_task": "On HijabKart, search for 'Jersey Hijab', open a black color variant, and add to cart."
+  },
+  {
+    "task_id": "hijabkart_filter_abayas_under_1000",
+    "website": "https://hijabkart.in",
+    "confirmed_task": "On HijabKart, open the Abayas collection and filter for items under ₹1000."
+  }
+]

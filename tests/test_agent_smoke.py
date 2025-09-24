@@ -14,23 +14,19 @@ def _ensure_pkg_path():
         sys.path.insert(0, str(pkg_root))
 
 
-@pytest.mark.smoke
-def test_seeact_agent_initialization_and_prompts(monkeypatch, tmp_path):
-    # Skip if Playwright is not available (import-level dep in agent module)
-    pytest.importorskip("playwright.async_api")
+def _load_agent_module(monkeypatch):
+    import importlib
+    import types
+    import os
 
     _ensure_pkg_path()
 
-    # Import after ensuring path and skip
-    import importlib
-    # Provide a lightweight toml stub if toml isn't installed
     if "toml" not in sys.modules:
         sys.modules["toml"] = types.SimpleNamespace(
             load=lambda *a, **k: {},
             dump=lambda *a, **k: None,
             TomlDecodeError=Exception,
         )
-    # Provide minimal stubs for optional deps to import module without installing all extras
     if "backoff" not in sys.modules:
         def _identity_deco(*args, **kwargs):
             def _wrap(fn):
@@ -53,15 +49,27 @@ def test_seeact_agent_initialization_and_prompts(monkeypatch, tmp_path):
         )
     if "requests" not in sys.modules:
         sys.modules["requests"] = types.SimpleNamespace(post=lambda **kwargs: types.SimpleNamespace(status_code=200, json=lambda: {"message": {"content": "ok"}}))
+
     agent_module = importlib.import_module("seeact.agent")
 
     class DummyEngine:
         def generate(self, *args, **kwargs):
             return "OK"
 
-    # Prefer real OpenAI engine if OPENAI_API_KEY is set; otherwise stub
+    dummy_cls = None
     if not os.getenv("OPENAI_API_KEY"):
+        dummy_cls = DummyEngine
         monkeypatch.setattr(agent_module, "engine_factory", lambda **_: DummyEngine(), raising=True)
+
+    return agent_module, dummy_cls
+
+
+@pytest.mark.smoke
+def test_seeact_agent_initialization_and_prompts(monkeypatch, tmp_path):
+    # Skip if Playwright is not available (import-level dep in agent module)
+    pytest.importorskip("playwright.async_api")
+
+    agent_module, dummy_cls = _load_agent_module(monkeypatch)
 
     # Create agent with local output dir and headless browser settings
     agent = agent_module.SeeActAgent(
@@ -74,7 +82,8 @@ def test_seeact_agent_initialization_and_prompts(monkeypatch, tmp_path):
     # Basic properties
     assert agent.complete_flag is False
     assert Path(agent.main_path).exists()
-    assert isinstance(agent.engine, DummyEngine)
+    if dummy_cls is not None:
+        assert isinstance(agent.engine, dummy_cls)
 
     # Prompt generation
     prompts = agent.generate_prompt()
@@ -86,3 +95,37 @@ def test_seeact_agent_initialization_and_prompts(monkeypatch, tmp_path):
     assert agent.update_prompt_part("system_prompt", "SYSTEM_MARKER")
     prompts2 = agent.generate_prompt()
     assert "SYSTEM_MARKER" in prompts2[0]
+
+
+def _base_agent_config(tmp_path: Path, input_info):
+    return {
+        "basic": {
+            "save_file_dir": str(tmp_path),
+            "default_task": "Test task",
+            "default_website": "https://example.com/",
+        },
+        "agent": {
+            "input_info": input_info,
+        },
+        "openai": {
+            "model": "gpt-4o-mini",
+            "rate_limit": -1,
+            "temperature": 0,
+        },
+    }
+
+
+def test_agent_screenshot_flag_respects_input_info(monkeypatch, tmp_path):
+    pytest.importorskip("playwright.async_api")
+    agent_module, _ = _load_agent_module(monkeypatch)
+    config = _base_agent_config(tmp_path, input_info=[])
+    agent = agent_module.SeeActAgent(config=config)
+    assert agent._capture_screenshots is False
+
+
+def test_agent_screenshot_flag_enabled_by_default(monkeypatch, tmp_path):
+    pytest.importorskip("playwright.async_api")
+    agent_module, _ = _load_agent_module(monkeypatch)
+    config = _base_agent_config(tmp_path, input_info=["screenshot"])
+    agent = agent_module.SeeActAgent(config=config)
+    assert agent._capture_screenshots is True

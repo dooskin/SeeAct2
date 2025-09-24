@@ -1,13 +1,15 @@
-## Runner configuration (Browserbase/CDP at scale)
+## Base SeeAct configuration
 
 [basic]
 is_demo = false
 save_file_dir = "../online_results"
-default_task = "Open homepage"
-default_website = "https://example.com/"
+default_task = "Find pdf of paper \"GPT-4V(ision) is a Generalist Web Agent, if Grounded\" from arXiv"
+default_website = "https://www.google.com/"
+crawler_mode = false
+crawler_max_steps = 10
 
 [experiment]
-task_file_path = "../data/online_tasks/sample_tasks.json"  # runner will use this if --tasks not provided
+task_file_path = "../data/online_tasks/sample_tasks.json"
 overwrite = false
 top_k = 50
 fixed_choice_batch_size = 22
@@ -20,6 +22,7 @@ dev_mode = false
 include_dom_in_choices = false
 
 [agent]
+input_info = ["screenshot"]
 grounding_strategy = "text_choice_som"
 max_auto_op = 50
 max_continuous_no_op = 5
@@ -35,28 +38,31 @@ timeout_sec = 20
 save_video = false
 tracing = false
 locale = "en-US"
+geolocation.longitude = 39.99542778404405
+geolocation.latitude = -83.0068669912263
 viewport.width = 1024
 viewport.height = 600
-trace.screenshots = false
-trace.snapshots = false
-trace.sources = false
+trace.screenshots = true
+trace.snapshots = true
+trace.sources = true
 
 [runtime]
-provider   = "browserbase"
-project_id = "1a0a8a6a-99be-405f-88bd-975e831706df"
-# Optional override
-# api_base = "https://api.browserbase.com/v1"
+provider = "local"
 
 [runner]
-concurrency = 25
-max_retries = 2
-backoff_base_sec = 10.0
-backoff_max_sec = 90.0
-task_timeout_sec = 300
+concurrency = 10
+max_retries = 0
+backoff_base_sec = 1.5
+backoff_max_sec = 15.0
+task_timeout_sec = 180
 metrics_dir = "../runs"
+verbose = false
+
+[manifest]
+cache_dir = "../site_manifest"
+refresh_days = 7
 
 [macros]
-# Optional overrides for macro selectors. Defaults are robust and used if not provided.
 product_href_patterns = ["/products", "/product"]
 product_section_selectors = ["main", "section[role='main']"]
 exclude_regions.bottom_fraction = 0.2

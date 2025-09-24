@@ -9,7 +9,9 @@ from typing import Any, Dict, List, Optional
 
 from personas.builder import build_master_pool, save_pool_artifacts
 from personas.prompts import render_shop_browse_prompt, write_prompt_module
+from personas.taxonomy import prompt_vocab_from_taxonomy
 from personas.scrape import scrape_shopify_vocab
+from personas.adapter import NeonGAAdapter, GAConfig, resolve_dsn, ensure_tables
 
 
 def _data_dir(arg: Optional[str]) -> Path:
@@ -146,11 +148,48 @@ def cmd_generate_prompts(args: argparse.Namespace) -> int:
     out_dir = args.out_dir or (data_dir / "prompts")
     out_items: List[Dict[str, Any]] = []
     index = {p.get("persona_id"): p for p in pool}
+    use_llm = bool(getattr(args, "use_llm", False))
+    llm_model = getattr(args, "llm_model", None)
+    llm_temperature = float(getattr(args, "llm_temperature", 0.2))
+    llm_base_url = getattr(args, "llm_base_url", None)
+    llm_max_tokens = int(getattr(args, "llm_max_tokens", 900))
+    if use_llm:
+        # Import lazily to avoid hard OpenAI dependency during deterministic runs
+        from personas.prompts.llm_renderer import generate_prompt_with_llm  # type: ignore
+    manifest_dir = None
+    if getattr(args, "manifest_dir", None):
+        manifest_dir = Path(args.manifest_dir).resolve()
+    else:
+        default_manifest_dir = Path("site_manifest").resolve()
+        if default_manifest_dir.exists():
+            manifest_dir = default_manifest_dir
     for pid in ids:
         p = index.get(pid)
         if not p:
             continue
-        text = render_shop_browse_prompt(p, args.site_domain or "", vocab=vocab if args.include_vocab else None)
+        persona_vocab = vocab if args.include_vocab else None
+        if args.use_manifest_taxonomy and args.site_domain:
+            manifest_vocab = prompt_vocab_from_taxonomy(args.site_domain, p.get("intent", ""), cache_dir=manifest_dir)
+            if manifest_vocab:
+                persona_vocab = persona_vocab or {}
+                for key, values in manifest_vocab.items():
+                    base = list(persona_vocab.get(key, [])) if persona_vocab.get(key) else []
+                    for val in values:
+                        if val not in base:
+                            base.append(val)
+                    persona_vocab[key] = base
+        if use_llm:
+            text = generate_prompt_with_llm(
+                p,
+                args.site_domain or "",
+                vocab=persona_vocab,
+                model=llm_model,
+                temperature=llm_temperature,
+                base_url=llm_base_url,
+                max_tokens=llm_max_tokens,
+            )
+        else:
+            text = render_shop_browse_prompt(p, args.site_domain or "", vocab=persona_vocab)
         path = write_prompt_module(text, pid, out_dir=str(out_dir))
         out_items.append({"persona_id": pid, "path": path})
     print(json.dumps({"count": len(out_items), "out_dir": str(out_dir)}, indent=2))
@@ -193,12 +232,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     gp.add_argument("--data-dir")
     gp.add_argument("--site-domain", required=True)
     gp.add_argument("--include-vocab", action="store_true")
+    gp.add_argument("--manifest-dir", help="Directory containing site manifests (default: site_manifest)")
+    gp.add_argument("--no-manifest-taxonomy", dest="use_manifest_taxonomy", action="store_false")
     gp.add_argument("--out-dir")
+    gp.add_argument("--use-llm", action="store_true", help="Use an LLM to render prompts instead of deterministic template")
+    gp.add_argument("--llm-model", help="LLM model (default from PERSONAS_LLM_MODEL or gpt-4o-mini)")
+    gp.add_argument("--llm-temperature", type=float, default=0.2)
+    gp.add_argument("--llm-base-url", help="OpenAI-compatible base URL (optional)")
+    gp.add_argument("--llm-max-tokens", type=int, default=900)
     grp = gp.add_mutually_exclusive_group(required=True)
     grp.add_argument("--ids", nargs="+")
     grp.add_argument("--ids-file")
     grp.add_argument("--size", type=int)
-    gp.set_defaults(func=cmd_generate_prompts)
+    gp.set_defaults(func=cmd_generate_prompts, use_manifest_taxonomy=True)
 
     sv = sp.add_parser("scrape-vocab", help="Scrape Shopify vocab and save to vocab.json")
     sv.add_argument("--data-dir")
@@ -207,10 +253,59 @@ def main(argv: Optional[List[str]] = None) -> int:
     sv.add_argument("--user-agent", default="SeeAct2Bot/1.0")
     sv.set_defaults(func=cmd_scrape_vocab)
 
+    # DB-backed build from GA + Neon (build N personas, default 1000)
+    bd = sp.add_parser("build-db", help="Build personas from GA in Neon and save artifacts (and optionally prompts)")
+    bd.add_argument("--dsn", help="Neon DSN (defaults to NEON_DATABASE_URL)")
+    bd.add_argument("--data-dir", help="Artifacts directory (default: data/personas)")
+    bd.add_argument("--window-days", type=int, default=30)
+    bd.add_argument("--window-end", help="ISO timestamp for window end (default: now UTC)")
+    bd.add_argument("--pool-size", type=int, default=1000)
+    bd.add_argument("--k-anon", type=int, default=50)
+    bd.add_argument("--unknown-drop-threshold", type=float, default=0.7)
+    bd.add_argument("--include-prompts", action="store_true")
+    bd.add_argument("--site-domain", help="Site domain for prompt hydration (optional)")
+
+    def _cmd_build_db(args: argparse.Namespace) -> int:
+        dsn = resolve_dsn(args.dsn, None)
+        if not dsn:
+            raise SystemExit("NEON_DATABASE_URL or --dsn required for build-db")
+        cfg = GAConfig()
+        cfg.window_days = int(args.window_days)
+        if args.window_end:
+            from datetime import datetime
+            cfg.window_end = datetime.fromisoformat(args.window_end)
+        adapter = NeonGAAdapter(dsn, cfg)
+        # Ensure tables and fetch cohorts
+        with adapter.connect() as conn:
+            ensure_tables(conn)
+        cohorts = adapter.fetch_cohorts()
+        # Build pool
+        from datetime import datetime, timezone
+        window_end = cfg.window_end or datetime.now(timezone.utc)
+        pool = build_master_pool(
+            cohorts,
+            window_end=window_end,
+            k_anon=int(args.k_anon),
+            unknown_drop_threshold=float(args.unknown_drop_threshold),
+            pool_size=int(args.pool_size),
+        )
+        # Persist DB + local artifacts
+        adapter.upsert_personas(pool, window_end)
+        paths = save_pool_artifacts(pool, data_dir=str(_data_dir(args.data_dir)))
+        # Optionally render prompts
+        if args.include_prompts:
+            for p in pool:
+                text = render_shop_browse_prompt(p, args.site_domain or "")
+                write_prompt_module(text, p.get("persona_id", "unknown"), out_dir=str(_data_dir(args.data_dir) / "prompts"))
+        out = {"count": len(pool), "artifacts": paths}
+        print(json.dumps(out, indent=2))
+        return 0
+
+    bd.set_defaults(func=_cmd_build_db)
+
     args = p.parse_args(argv)
     return int(args.func(args) or 0)
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

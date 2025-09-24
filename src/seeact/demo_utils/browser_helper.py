@@ -1,21 +1,8 @@
-# -*- coding: utf-8 -*-
-# Copyright (c) 2024 OSU Natural Language Processing Group
-#
-# Licensed under the OpenRAIL-S License;
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     https://www.licenses.ai/ai-pubs-open-rails-vz1
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 import re
 import asyncio
+import copy
 from difflib import SequenceMatcher
+from urllib.parse import urlparse
 try:
     from playwright.sync_api import Playwright, expect, sync_playwright  # type: ignore
 except Exception:  # optional for type hints only
@@ -38,13 +25,40 @@ except Exception:  # optional dependency for saveconfig
             except Exception:
                 pass
     toml = _TomlStub()  # type: ignore
-from typing import List
+from typing import List, Optional
 import os
 
-async def normal_launch_async(playwright: Playwright,headless=False,args=None):
+_OVERLAY_CACHE: dict[str, str] = {}
+
+
+def _normalize_host(value: str) -> str:
+    value = (value or "").lower()
+    if value.startswith("http://") or value.startswith("https://"):
+        try:
+            value = urlparse(value).hostname or value
+        except Exception:
+            return value
+    if value.startswith("www."):
+        value = value[4:]
+    return value
+
+
+def register_overlay_hint(domain: str, selector: Optional[str]):  # pragma: no cover - small helper
+    if not selector:
+        return
+    key = _normalize_host(domain)
+    if key:
+        _OVERLAY_CACHE[key] = selector
+
+
+def _clear_overlay_cache():  # pragma: no cover - only used in tests
+    _OVERLAY_CACHE.clear()
+
+
+async def normal_launch_async(playwright: Playwright, headless=False, args=None):
     browser = await playwright.chromium.launch(
         traces_dir=None,
-        headless=False,
+        headless=headless,
         args=args,
         # ignore_default_args=ignore_args,
         # chromium_sandbox=False,
@@ -478,11 +492,37 @@ def saveconfig(config, save_file):
         save_file = Path(save_file)
     if isinstance(config, dict):
         with open(save_file, 'w') as f:
-            config_without_key = config
-            config_without_key["openai"]["api_key"] = "Your API key here"
-            toml.dump(config_without_key, f)
+            config_copy = copy.deepcopy(config)
+            if "openai" in config_copy and isinstance(config_copy["openai"], dict):
+                config_copy["openai"]["api_key"] = "Your API key here"
+            toml.dump(config_copy, f)
     else:
         os.system(" ".join(["cp", str(config), str(save_file)]))
+
+
+_OVERLAY_SELECTORS: List[str] = [
+    '[role="dialog"] [aria-label*="close" i]',
+    '[role="dialog"] [aria-label*="dismiss" i]',
+    '[role="dialog"] button:has-text("Close")',
+    '[role="dialog"] button:has-text("No thanks")',
+    '[role="dialog"] button:has-text("Not now")',
+    '[role="dialog"] button:has-text("Dismiss")',
+    '[role="dialog"] button:has-text("Accept")',
+    '[role="dialog"] button:has-text("Accept All")',
+    '[role="dialog"] button:has-text("Agree")',
+    '[role="dialog"] button:has-text("Allow all")',
+    '[aria-label*="close" i]',
+    '[aria-label*="dismiss" i]',
+    'button:has-text("Close")',
+    'button:has-text("No thanks")',
+    'button:has-text("Not now")',
+    'button:has-text("Dismiss")',
+    'button:has-text("Accept")',
+    'button:has-text("Accept All")',
+    'button:has-text("Agree")',
+    'button:has-text("Allow all")',
+    'text=/^\s*[✖×X]\s*$/',
+]
 
 
 async def auto_dismiss_overlays(page, max_clicks: int = 3) -> int:
@@ -495,30 +535,18 @@ async def auto_dismiss_overlays(page, max_clicks: int = 3) -> int:
     Returns the number of clicks performed.
     """
     clicked = 0
-    # Ordered by specificity; we try a few passes up to max_clicks
-    selectors: List[str] = [
-        '[role="dialog"] [aria-label*="close" i]',
-        '[role="dialog"] [aria-label*="dismiss" i]',
-        '[role="dialog"] button:has-text("Close")',
-        '[role="dialog"] button:has-text("No thanks")',
-        '[role="dialog"] button:has-text("Not now")',
-        '[role="dialog"] button:has-text("Dismiss")',
-        '[role="dialog"] button:has-text("Accept")',
-        '[role="dialog"] button:has-text("Accept All")',
-        '[role="dialog"] button:has-text("Agree")',
-        '[role="dialog"] button:has-text("Allow all")',
-        '[aria-label*="close" i]',
-        '[aria-label*="dismiss" i]',
-        'button:has-text("Close")',
-        'button:has-text("No thanks")',
-        'button:has-text("Not now")',
-        'button:has-text("Dismiss")',
-        'button:has-text("Accept")',
-        'button:has-text("Accept All")',
-        'button:has-text("Agree")',
-        'button:has-text("Allow all")',
-        'text=/^\s*[✖×X]\s*$/',
-    ]
+    try:
+        parsed = urlparse(getattr(page, "url", ""))
+        host = parsed.hostname or ""
+    except Exception:
+        host = ""
+    host = _normalize_host(host)
+    cached_selector = _OVERLAY_CACHE.get(host) if host else None
+
+    selectors: List[str] = []
+    if cached_selector:
+        selectors.append(cached_selector)
+    selectors.extend([s for s in _OVERLAY_SELECTORS if s != cached_selector])
 
     for _ in range(max_clicks):
         acted = False
@@ -545,6 +573,8 @@ async def auto_dismiss_overlays(page, max_clicks: int = 3) -> int:
                             await cand.click(timeout=1500)
                             clicked += 1
                             acted = True
+                            if host:
+                                _OVERLAY_CACHE[host] = sel
                             break
                     except Exception:
                         continue

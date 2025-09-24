@@ -1,0 +1,2 @@
+[openai]
+model = "ft:gpt-4o-mini:org:proj:example"

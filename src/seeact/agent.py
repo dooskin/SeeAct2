@@ -32,6 +32,9 @@ import random
 import traceback
 from datetime import datetime
 from os.path import dirname
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 try:
     import toml  # type: ignore
@@ -49,13 +52,14 @@ except Exception:
     toml = _TomlStub()  # type: ignore
 import importlib
 import asyncio
+import copy
 import re
 import time
 
 from .data_utils.format_prompt_utils import get_index_from_option_name, generate_new_query_prompt, \
     generate_new_referring_prompt, format_options, generate_option_name
 from .demo_utils.browser_helper import normal_launch_async, normal_new_context_async, \
-    get_interactive_elements_with_playwright, select_option, saveconfig, auto_dismiss_overlays
+    get_interactive_elements_with_playwright, select_option, saveconfig, auto_dismiss_overlays, register_overlay_hint
 from .demo_utils.crawler_helper import get_random_link
 from .demo_utils.format_prompt import format_choices, postprocess_action_lmm, postprocess_action_lmm_pixel
 try:
@@ -72,10 +76,13 @@ try:
 except Exception:
     bb_resolve = bb_create = bb_close = None  # type: ignore
 
+from .manifest import load_manifest
+
 
 class SeeActAgent:
     def __init__(self,
                  config_path=None,
+                 config=None,
                  save_file_dir="seeact_agent_files",
                  default_task='Find the pdf of the paper "GPT-4V(ision) is a Generalist Web Agent, if Grounded"',
                  default_website="https://www.google.com/",
@@ -108,10 +115,17 @@ class SeeActAgent:
                  ):
 
         try:
-            if config_path is not None:
+            if config is not None:
+                config = copy.deepcopy(config)
+                meta = config.pop("__meta", {}) if isinstance(config, dict) else {}
+                if config_path is None:
+                    config_path = meta.get("config_path")
+                self._config_dir = Path(meta.get("config_dir", os.getcwd()))
+            elif config_path is not None:
                 with open(config_path, 'r') as fp:
                     print(f"Configuration File Loaded - {config_path}")
                     config = toml.load(fp)
+                self._config_dir = Path(config_path).resolve().parent
             else:
                 config = {
                     "basic": {
@@ -134,16 +148,30 @@ class SeeActAgent:
                         "temperature": temperature
                     }
                 }
+                self._config_dir = Path(os.getcwd())
+            config = config or {}
+
+            basic_cfg = config.setdefault("basic", {})
+            basic_cfg.setdefault("save_file_dir", save_file_dir)
+            basic_cfg.setdefault("default_task", default_task)
+            basic_cfg.setdefault("default_website", default_website)
+            basic_cfg.setdefault("crawler_mode", crawler_mode)
+            basic_cfg.setdefault("crawler_max_steps", crawler_max_steps)
+
+            openai_cfg = config.setdefault("openai", {})
+            openai_cfg.setdefault("rate_limit", rate_limit)
+            openai_cfg.setdefault("model", model)
+            openai_cfg.setdefault("temperature", temperature)
+
             # Normalize/augment config to a unified schema expected by this agent
             # Ensure an 'agent' section exists
-            if "agent" not in config or not isinstance(config.get("agent"), dict):
-                config["agent"] = {
-                    "input_info": config.get("agent", {}).get("input_info", ["screenshot"]),
-                    "grounding_strategy": config.get("agent", {}).get("grounding_strategy", grounding_strategy),
-                    "max_auto_op": config.get("agent", {}).get("max_auto_op", max_auto_op),
-                    "max_continuous_no_op": config.get("agent", {}).get("max_continuous_no_op", max_continuous_no_op),
-                    "highlight": config.get("agent", {}).get("highlight", highlight),
-                }
+            agent_cfg = config.setdefault("agent", {})
+            agent_cfg.setdefault("input_info", agent_cfg.get("input_info", ["screenshot"]))
+            agent_cfg.setdefault("grounding_strategy", agent_cfg.get("grounding_strategy", grounding_strategy))
+            agent_cfg.setdefault("max_auto_op", agent_cfg.get("max_auto_op", max_auto_op))
+            agent_cfg.setdefault("max_continuous_no_op", agent_cfg.get("max_continuous_no_op", max_continuous_no_op))
+            agent_cfg.setdefault("highlight", agent_cfg.get("highlight", highlight))
+            self._capture_screenshots = "screenshot" in (agent_cfg.get("input_info") or [])
 
             # Map Playwright section to 'browser' section
             pw = config.get("playwright", {}) or {}
@@ -167,7 +195,9 @@ class SeeActAgent:
         except toml.TomlDecodeError:
             print(f"Error: File '{os.path.abspath(config_path)}' is not a valid TOML file.")
 
+        self.config_path = config_path
         self.config = config
+        self._meta = {"config_dir": str(getattr(self, "_config_dir", Path(os.getcwd()))), "config_path": str(config_path) if config_path else None}
         self.complete_flag = False
         self.session_control = {
             'active_page': None,
@@ -178,8 +208,15 @@ class SeeActAgent:
         self._bb_session_id = None
         self._bb_api_key = None
         self.tasks = [self.config["basic"]["default_task"]]
+        self._step_metrics: list[dict[str, float | int | bool]] = []
+        self._manifest = None
+        self._manifest_selectors: dict[str, Any] = {}
+        self._manifest_step_used = False
+        self._manifest_config = self.config.get("manifest", {}) or {}
 
-        self.main_path = os.path.join(self.config["basic"]["save_file_dir"], datetime.now().strftime("%Y%m%d_%H%M%S"))
+        save_root = Path(self.config["basic"]["save_file_dir"]).resolve()
+        save_root.mkdir(parents=True, exist_ok=True)
+        self.main_path = str((save_root / datetime.now().strftime("%Y%m%d_%H%M%S")).resolve())
         os.makedirs(self.main_path, exist_ok=True)
         self.action_space = ["CLICK", "PRESS ENTER", "HOVER", "SCROLL UP", "SCROLL DOWN", "NEW TAB", "CLOSE TAB",
                              "GO BACK", "GO FORWARD",
@@ -243,6 +280,26 @@ class SeeActAgent:
             ]),
         }
 
+    @staticmethod
+    def _categorize_url(url: str) -> Tuple[bool, bool]:
+        """Return flags (is_collection_like, is_pdp_like) derived from a URL."""
+        lowered = (url or "").lower()
+        is_collection = any(token in lowered for token in (
+            "/collections/",
+            "/collection/",
+            "/categories/",
+            "/category/",
+            "/catalog/",
+            "/search",
+        ))
+        is_pdp = any(token in lowered for token in (
+            "/products/",
+            "/product/",
+            "/item/",
+            "/p/",
+        ))
+        return is_collection, is_pdp
+
     async def _generate_with_timeout(self, **kwargs):
         """Run self.engine.generate in a thread with a timeout to prevent step stalls."""
         def _call():
@@ -297,9 +354,21 @@ class SeeActAgent:
                 "action": "CLICK",
                 "value": "",
             }
+        manifest_selectors = getattr(self, "_manifest_selectors", {}) or {}
+
         # 1) If on collection page: click a product tile anchor under main grid, generic bias using task keywords; avoid header/footer
         try:
             if "/collections/" in url and "/products/" not in url:
+                manifest_col = manifest_selectors.get("collections") or {}
+                manifest_product = manifest_col.get("product_link")
+                if manifest_product:
+                    try:
+                        loc = page.locator(manifest_product).first
+                        if await loc.count() > 0 and await loc.is_visible(timeout=1000):
+                            self._manifest_step_used = True
+                            return await _pred_from_locator(loc, "Open product tile", "a")
+                    except Exception:
+                        pass
                 # Build product anchor locator from macro config patterns
                 href_or = " | ".join([f"a[href*='{p}']" for p in self._macro_cfg["product_href_patterns"]])
                 sections = ", ".join(self._macro_cfg["product_section_selectors"])
@@ -345,11 +414,25 @@ class SeeActAgent:
         except Exception:
             pass
         # 2) On PDP: select a visible variant if required (generic labels/roles), or click Add to Cart if enabled
-        try:
-            is_pdp = "/products/" in url or (await page.locator('form[action*="/cart/add"]').count() > 0)
-        except Exception:
-            is_pdp = False
+        is_collection_like, is_pdp_like = self._categorize_url(url or "")
+        is_pdp = is_pdp_like
+        if not is_pdp and not is_collection_like:
+            try:
+                if await page.locator('form[action*="/cart/add"]').count() > 0:
+                    is_pdp = True
+            except Exception:
+                is_pdp = False
         if is_pdp:
+            manifest_pdp = manifest_selectors.get("pdp") or {}
+            manifest_variant = manifest_pdp.get("variant_widget")
+            if manifest_variant:
+                try:
+                    loc = page.locator(manifest_variant).first
+                    if await loc.count() > 0 and await loc.is_visible(timeout=1000):
+                        self._manifest_step_used = True
+                        return await _pred_from_locator(loc, f"Select variant {manifest_variant}", "button")
+                except Exception:
+                    pass
             # Try common role/inputs for variant selection generically
             variant_selectors = [
                 "[role='radio']", "[role='option']", "input[type='radio'] + label", "select", "[role='combobox']",
@@ -363,6 +446,15 @@ class SeeActAgent:
                 except Exception:
                     continue
             # 3) Add to cart
+            manifest_atc = manifest_pdp.get("add_to_cart")
+            if manifest_atc:
+                try:
+                    loc = page.locator(manifest_atc).first
+                    if await loc.count() > 0 and await loc.is_visible(timeout=1000):
+                        self._manifest_step_used = True
+                        return await _pred_from_locator(loc, "Add to cart", "button")
+                except Exception:
+                    pass
             atc_selectors = self._macro_cfg["atc_selectors"]
             for sel in atc_selectors:
                 try:
@@ -386,6 +478,16 @@ class SeeActAgent:
             return await _pred_from_locator(checkout_sel, "Checkout", "button")
         # 5) Fallback to Cart then Checkout (only if we likely added items)
         try:
+            manifest_cart = manifest_selectors.get("cart") or {}
+            manifest_checkout = manifest_cart.get("checkout")
+            if manifest_checkout:
+                try:
+                    loc = page.locator(manifest_checkout).first
+                    if await loc.count() > 0 and await loc.is_visible(timeout=1000):
+                        self._manifest_step_used = True
+                        return await _pred_from_locator(loc, "Checkout", "button")
+                except Exception:
+                    pass
             # Prefer clicking a cart icon/link if visible
             cart_icon = page.locator('a[href*="/cart"], button[aria-label*="cart" i], a[aria-label*="cart" i]').first
             if await cart_icon.count() > 0 and await cart_icon.is_visible(timeout=1000):
@@ -728,6 +830,8 @@ To be successful, it is important to follow the following rules:
             except Exception:
                 # Defer engine errors to first use to allow construction under tests without API keys
                 self.engine = None
+        if website:
+            self._load_manifest_for_url(website)
         # Lazy import to respect test stubs in sys.modules
         pa = importlib.import_module("playwright.async_api")
         ap = pa.async_playwright()
@@ -868,6 +972,70 @@ To be successful, it is important to follow the following rules:
             print(f"Prompt part '{part_name}' not found.")
             return False
 
+    @staticmethod
+    def _extract_domain(url: Optional[str]) -> Optional[str]:
+        if not url:
+            return None
+        try:
+            host = urlparse(url).hostname
+            if host and host.startswith("www."):
+                host = host[4:]
+            return host
+        except Exception:
+            return None
+
+    def _load_manifest_for_url(self, url: Optional[str]) -> None:
+        self._manifest = None
+        self._manifest_selectors = {}
+        if not url:
+            return
+        domain = self._extract_domain(url)
+        manifest_cfg = self._manifest_config or {}
+        cache_dir_value = manifest_cfg.get("cache_dir")
+        cache_dir_path = None
+        if cache_dir_value:
+            cache_dir_path = Path(os.path.expandvars(cache_dir_value)).resolve()
+        candidates = []
+        if domain:
+            candidates.append(domain)
+            parts = domain.split(".")
+            if len(parts) > 2:
+                candidates.append(".".join(parts[-2:]))
+        for cand in candidates:
+            manifest = load_manifest(cand, cache_dir=cache_dir_path)
+            if manifest:
+                self._manifest = manifest
+                selectors = manifest.data.get("selectors", {}) or {}
+                self._manifest_selectors = selectors
+                overlay_selector = (selectors.get("overlays") or {}).get("close_button")
+                if overlay_selector:
+                    register_overlay_hint(cand, overlay_selector)
+                break
+
+    def _manifest_prompt_hint(self) -> Optional[str]:
+        selectors = getattr(self, "_manifest_selectors", {}) or {}
+        if not selectors:
+            return None
+        hints = []
+        search_sel = (selectors.get("search") or {}).get("input")
+        if search_sel:
+            hints.append(f"Use CSS selector `{search_sel}` for the search input.")
+        product_sel = (selectors.get("collections") or {}).get("product_link")
+        if product_sel:
+            hints.append(f"Product tiles use `{product_sel}`.")
+        variant_sel = (selectors.get("pdp") or {}).get("variant_widget")
+        if variant_sel:
+            hints.append(f"Variant widgets use `{variant_sel}`.")
+        atc_sel = (selectors.get("pdp") or {}).get("add_to_cart")
+        if atc_sel:
+            hints.append(f"Add to cart button is `{atc_sel}`.")
+        checkout_sel = (selectors.get("cart") or {}).get("checkout")
+        if checkout_sel:
+            hints.append(f"Checkout CTA uses `{checkout_sel}`.")
+        if not hints:
+            return None
+        return "Manifest hints:\n- " + "\n- ".join(hints)
+
     def generate_prompt(self, task=None, previous=None, choices=None):
 
         """Generate a prompt based on the current task, previous actions, and choices."""
@@ -892,6 +1060,10 @@ To be successful, it is important to follow the following rules:
             element_format_input = self.prompts["element_format"]
             action_format_input = self.prompts["action_format"]
             value_format_input = self.prompts["value_format"]
+
+            manifest_hint = self._manifest_prompt_hint()
+            if manifest_hint:
+                question_description_input = question_description_input + "\n\n" + manifest_hint
 
             # print(previous)
 
@@ -997,7 +1169,6 @@ To be successful, it is important to follow the following rules:
                 # value = stringfy_value(action['fill_text'])
                 await self.page.keyboard.type(value)
             else:
-                await selector.fill(value)
                 await selector.fill(value)
                 self.logger.info(f"Typed '{value}' into element: {element_repr}")
 
@@ -1174,15 +1345,6 @@ To be successful, it is important to follow the following rules:
         except Exception as e:
             self.logger.info(f"Mark page script error {e}")
 
-        # Heuristic-first: try a macro step immediately if it can make obvious progress
-        try:
-            macro_pred = await self._macro_next_action()
-            if macro_pred and macro_pred.get("action") not in [None, "", "NONE"]:
-                self.predictions.append(macro_pred)
-                return macro_pred
-        except Exception:
-            pass
-
         # Generate choices for the prompt (batched for parity with demo)
         include_dom = bool((self.config.get("experiment") or {}).get("include_dom_in_choices", False))
         exp_cfg = self.config.get("experiment", {}) or {}
@@ -1192,12 +1354,17 @@ To be successful, it is important to follow the following rules:
         if top_k > 0:
             elements = elements[:top_k]
 
-        # Capture a screenshot for the current state of the webpage
-        screenshot_path = os.path.join(self.main_path, 'screenshots', f'screen_{self.time_step}.png')
-        try:
-            await self.page.screenshot(path=screenshot_path)
-        except Exception as e:
-            self.logger.info(f"Failed to take screenshot: {e}")
+        screenshot_path = None
+        if self._capture_screenshots:
+            screenshot_path = self.screenshot_path
+            try:
+                Path(screenshot_path).parent.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+            try:
+                await self.page.screenshot(path=screenshot_path)
+            except Exception as e:
+                self.logger.info(f"Failed to take screenshot: {e}")
 
         terminal_width = 10
         self.logger.info(f"Step - {self.time_step}\n{'-' * terminal_width}\nAction Generation ➡️")
@@ -1215,12 +1382,44 @@ To be successful, it is important to follow the following rules:
             prediction = {"action_generation": "", "action_grounding": "", "element": None,
                           "action": pred_action, "value": pred_value, "coordinates": None,
                           "description": pred_element_label}
+            self._step_metrics.append({
+                "scan_ms": scan_ms,
+                "llm_ms": 0,
+                "macro_used": False,
+                "num_candidates": 0,
+                "manifest_available": bool(getattr(self, "_manifest_selectors", {})),
+                "manifest_used": getattr(self, "_manifest_step_used", False),
+            })
 
         else:
             num_choices = len(elements)
+            manifest_selectors = getattr(self, "_manifest_selectors", {}) or {}
+            self._manifest_step_used = False
+            step_metrics_entry = {
+                "scan_ms": scan_ms,
+                "llm_ms": 0,
+                "macro_used": False,
+                "num_candidates": num_choices,
+                "manifest_available": bool(manifest_selectors),
+                "manifest_used": False,
+            }
+            # Heuristic-first: try a macro step immediately if it can make obvious progress
+            try:
+                macro_pred = await self._macro_next_action()
+                if macro_pred and macro_pred.get("action") not in [None, "", "NONE"]:
+                    self.predictions.append(macro_pred)
+                    step_metrics_entry["macro_used"] = True
+                    step_metrics_entry["manifest_used"] = getattr(self, "_manifest_step_used", False)
+                    self._step_metrics.append(step_metrics_entry)
+                    return macro_pred
+            except Exception:
+                pass
             if num_choices == 0:
                 prediction = await self._macro_next_action()
                 self.predictions.append(prediction)
+                step_metrics_entry["macro_used"] = True
+                step_metrics_entry["manifest_used"] = getattr(self, "_manifest_step_used", False)
+                self._step_metrics.append(step_metrics_entry)
                 return prediction
             if dynamic_choice_batch_size > 0:
                 step_length = max(1, int(dynamic_choice_batch_size))
@@ -1240,11 +1439,12 @@ To be successful, it is important to follow the following rules:
                 t_llm0 = time.time()
                 output = await self._generate_with_timeout(
                     prompt=prompt,
-                    image_path=self.screenshot_path,
+                    image_path=screenshot_path,
                     turn_number=1,
                     ouput_0="",
                 )
                 llm_ms_total += int((time.time() - t_llm0) * 1000)
+                step_metrics_entry["llm_ms"] = llm_ms_total
                 self.logger.info("🤖 Action Grounding Output 🤖")
                 if output:
                     for line in output.split('\n'):
@@ -1253,7 +1453,10 @@ To be successful, it is important to follow the following rules:
                 if not output:
                     # LLM timed out → use fallback macro for this step
                     prediction = await self._macro_next_action()
+                    step_metrics_entry["macro_used"] = True
                     self.logger.info(f"metrics: scan_ms={scan_ms} llm_ms={llm_ms_total} macro_used=true num_candidates={num_choices}")
+                    step_metrics_entry["manifest_used"] = getattr(self, "_manifest_step_used", False)
+                    self._step_metrics.append(step_metrics_entry)
                     self.predictions.append(prediction)
                     return prediction
 
@@ -1272,11 +1475,13 @@ To be successful, it is important to follow the following rules:
             if prediction is None:
                 # No actionable choice from batches → use fallback macro
                 prediction = await self._macro_next_action()
-            # metrics line (no-op if llm_ms_total==0)
+                step_metrics_entry["macro_used"] = True
             try:
-                self.logger.info(f"metrics: scan_ms={scan_ms} llm_ms={llm_ms_total} macro_used=false num_candidates={num_choices}")
+                self.logger.info(f"metrics: scan_ms={scan_ms} llm_ms={llm_ms_total} macro_used={step_metrics_entry['macro_used']} num_candidates={num_choices}")
             except Exception:
                 pass
+            step_metrics_entry["manifest_used"] = getattr(self, "_manifest_step_used", False)
+            self._step_metrics.append(step_metrics_entry)
 
         self.predictions.append(prediction)
 
@@ -1431,8 +1636,15 @@ To be successful, it is important to follow the following rules:
     # decompose run to predict and execute.
 
     async def take_screenshot(self):
+        if not self._capture_screenshots:
+            return None
+        path = self.screenshot_path
         try:
-            await self.page.screenshot(path=self.screenshot_path)
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        try:
+            await self.page.screenshot(path=path)
         except Exception as e:
             self.logger.info(f"Failed to take screenshot: {e}")
 

@@ -12,21 +12,26 @@ Welcome! This guide explains the repository layout, coding style, testing strate
   - `data_utils/`: Prompt formatting helpers
 - `src/personas/`: Persona Prompt Pack (decoupled from the agent)
   - `adapter/`: Neon Postgres + GA cohort ingestion and DDL
-  - `builder/`: Cohort normalization → 1,000‑persona pool, k‑anon, intent bins
-  - `prompts/`: UXAgent‑aligned templates (`templates/`) + generator; vendored exemplars under `shop_prompts/`
+  - `builder/`: Cohort normalization → 1,000-persona pool, k-anon, intent bins
+  - `prompts/`: UXAgent-aligned templates (`templates/`) + generator; optional LLM renderer with validation fallback; vendored exemplars under `shop_prompts/`
+  - `taxonomy.py`: Derives site vocabulary from manifests per persona intent
   - `scrape/`: Shopify vocab scraper (collections/products/filters/CTAs)
-  - `cli.py`: Local, no‑API CLI for seed‑demo / sample / generate‑prompts / scrape‑vocab
-- `src/api/`: Personas‑only FastAPI
+  - `cli.py`: Local, no-API CLI for seed-demo / sample / generate-prompts / scrape-vocab
+- `src/api/`: Personas-only FastAPI
   - `main.py`: App factory + CORS
   - `routes/personas.py`: `/v1/personas/*` endpoints
-- `config/`: Configuration (e.g., `personas.yaml`)
+- `config/`: Configuration (e.g., `base.toml`, profiles/, `personas.yaml`)
+- `site_manifest/`: Domain-specific selector manifests used by prompts/macros
 - `data/personas/`: Local artifacts for personas
   - `master_pool.{jsonl,yaml}`: 1,000‑persona pool snapshot
   - `prompts/`: UXAgent‑style prompt modules (`shop_prompt_<persona_id>.py`)
   - `vocab.json`: Shopify vocab (optional)
   - `summary.json`, `pool.meta.json`: Summary + pool metadata
 - `tests/`: Pytest suites
-  - `tests/personas/`: adapter/builder/prompts/scrape unit tests
+- `tests/personas/`: adapter/builder/prompts/scrape unit tests
+- `tests/personas/test_taxonomy.py`: manifest-driven vocabulary expectations
+- `tests/test_calibrator.py`: persona calibration loop
+- `tests/test_recommendation_gating.py`: manifest capability gating
   - `tests/api/`: personas API smoke tests
   - `tests/*smoke.py`: agent/runner/runtime smokes
   - `tests/*integration.py`: optional Playwright/OpenAI integration
@@ -52,6 +57,9 @@ Two primary paths:
 - `python -m personas.cli seed-demo --data-dir data/personas`
 - `python -m personas.cli sample --size 10 --ids-out persona_ids.json --data-dir data/personas`
 - `python -m personas.cli generate-prompts --site-domain yourstore.com --ids-file persona_ids.json --data-dir data/personas --out-dir data/personas/prompts`
+- (Optional LLM): add `--use-llm [--llm-model gpt-4o-mini --llm-temperature 0.2]` and set `OPENAI_API_KEY` (and optional `OPENAI_BASE_URL`). LLM output is validated; if required sections or the domain are missing, the CLI falls back to the deterministic template.
+- Manifest taxonomy is on by default; disable with `--no-manifest-taxonomy` or point at a custom directory via `--manifest-dir`.
+- Calibrate personas against GA CR/dwell targets: `python -m seeact.calibrate --personas data/personas/personas.yaml --ga-targets data/personas/ga_targets.json --metrics runs/run_x/metrics.jsonl --out data/personas/personas_calibrated.yaml`
 
 Artifacts live under `PERSONAS_DATA_DIR` (default `data/personas`).
 
@@ -77,6 +85,7 @@ Artifacts live under `PERSONAS_DATA_DIR` (default `data/personas`).
   - DSN precedence; GA SQL shape (adapter)
   - Normalization rules, k‑anon merge, 1000 pool size (builder)
   - Prompt module generation and `get_prompt()` contract (prompts)
+  - LLM renderer path is stubbed via monkeypatch (no network), ensuring section headings and module write contract
   - Vocab extraction and dedup logic (scrape)
 - E2E (local, no DB): `python scripts/e2e_personas.py` – seeds a pool, renders a prompt, and scrapes vocab using `TestClient`.
 
@@ -93,6 +102,7 @@ Artifacts live under `PERSONAS_DATA_DIR` (default `data/personas`).
 4) For new endpoints, add tests under `tests/api/` and update README sections.
 5) Keep personas decoupled: the runner should only consume persona_ids and log them; do not import personas logic into the runner.
 6) Update docs: reflect behavior changes in README and this file.
+7) If you change site flows/selectors, refresh the manifest (`python -m seeact.manifest.scrape <domain>`) and commit the updated JSON under `site_manifest/`.
 
 ## Pull Request Checklist
 
@@ -101,6 +111,7 @@ Artifacts live under `PERSONAS_DATA_DIR` (default `data/personas`).
 - [ ] README updated (commands, endpoints, or usage as needed)
 - [ ] No secrets in code/logs; use env vars; DSN precedence intact
 - [ ] Persona assets (UXAgent exemplars) unchanged unless updating vendor snapshot intentionally
+- [ ] Calibration loop covered by unit tests when adjusting persona schemas
 
 ## Frequently Used Commands
 
@@ -109,7 +120,7 @@ Artifacts live under `PERSONAS_DATA_DIR` (default `data/personas`).
 - CLI demo: `make personas-cli-demo`
 - Build runner YAML from pool: `make personas-runner-yaml`
 - Build 1,000 via API (Neon): `make personas-build-1000`
-- Run runner (local): `python -m seeact.runner -c src/seeact/config/auto_mode.toml --tasks ... --personas data/personas/runner_personas.yaml`
+- Run runner (local): `python -m seeact.runner -c config/base.toml --tasks ... --personas data/personas/runner_personas.yaml`
 
 Thanks for contributing and keeping the personas layer decoupled and testable!
 
@@ -171,4 +182,3 @@ Thanks for contributing and keeping the personas layer decoupled and testable!
                     |  CohortMetrics / Vocab    |
                     +---------------------------+
 ```
-

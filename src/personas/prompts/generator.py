@@ -62,6 +62,7 @@ def render_shop_browse_prompt(persona: Dict[str, Any], site_domain: str, vocab: 
                 continue
             if skip and line.strip().startswith("# STOP"):
                 skip = False
+                lines.append(line)
                 continue
             if not skip:
                 lines.append(line)

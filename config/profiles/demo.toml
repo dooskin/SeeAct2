@@ -1,0 +1,16 @@
+[basic]
+is_demo = true
+default_task = "On the Shopify store, find a men's running shoe. Use search or collection, open a product, choose size US 10 on the PDP, add 1 to cart, go to checkout and STOP before payment. Return: product title, PDP URL, price, variant, and checkout subtotal."
+default_website = "https://www.allbirds.com/collections/mens"
+
+[experiment]
+include_dom_in_choices = true
+fixed_choice_batch_size = 17
+dynamic_choice_batch_size = 1600
+
+[playwright]
+viewport.width = 1366
+viewport.height = 900
+
+[runner]
+concurrency = 5

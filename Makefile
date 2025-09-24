@@ -7,10 +7,10 @@ setup:
 	playwright install
 
 run-demo:
-	@python -m seeact.seeact
+	@python -m seeact.seeact --profile demo
 
 run-auto:
-	@python -m seeact.seeact -c src/seeact/config/auto_mode.toml
+	@python -m seeact.seeact
 
 test-smoke:
 	@pytest -q -m smoke
@@ -19,10 +19,10 @@ test-int:
 	@pytest -q -m integration
 
 run-runner:
-	@python -m seeact.runner -c src/seeact/config/auto_mode.toml --verbose
+	@python -m seeact.runner -c config/base.toml --verbose
 
 run-runner-bb:
-	@python -m seeact.runner -c src/seeact/config/runner_browserbase.toml --verbose
+	@python -m seeact.runner -c config/base.toml --profile browserbase --verbose
 
 build-personas:
 	@python -m personas.build_personas --out data/personas/personas.yaml

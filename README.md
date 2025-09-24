@@ -15,7 +15,7 @@ SeeAct is an engineering-focused platform for building, running, and measuring a
 ## Repository Structure
 
 - `src/seeact/seeact.py`: Main entry point (demo/auto modes).
-- `src/seeact/config/*.toml`: Configs for demo, auto, and online experiments.
+- `config/base.toml` + `config/profiles/*.toml`: Layered settings for demo/auto/browserbase profiles.
 - `src/{seeact/demo_utils,seeact/data_utils,offline_experiments}/`: Runtime helpers and experiment scripts.
 - `data/`: Sample tasks and example artifacts (large files should not be committed).
 - `tests/`: Pytest suites (smoke and integration as they are added).
@@ -49,9 +49,9 @@ export OPENAI_API_KEY=...    # or: export GEMINI_API_KEY=...
 
 Change model quickly (OpenAI/fine‑tunes)
 - Edit `[openai].model` in a config file to use a different or fine‑tuned model.
-- Example: use `src/seeact/config/openai_ft.toml` (pre‑configured placeholder for a fine‑tuned model), then run:
+- Example: apply the `openai_finetune` profile (pre‑configured placeholder for a fine‑tuned model), then run:
 ```bash
-python -m seeact.runner -c src/seeact/config/openai_ft.toml \
+python -m seeact.runner -c config/base.toml --profile openai_finetune \
   --tasks data/online_tasks/sample_tasks.json \
   --concurrency 6 --verbose
 ```
@@ -59,12 +59,12 @@ python -m seeact.runner -c src/seeact/config/openai_ft.toml \
 
 4) Run demo mode (interactive)
 ```bash
-python -m seeact.seeact
+python -m seeact.seeact --profile demo
 ```
 
 5) Run auto mode (batch)
 ```bash
-python -m seeact.seeact -c src/seeact/config/auto_mode.toml
+python -m seeact.seeact
 ```
 
 Environment tips:
@@ -82,7 +82,7 @@ Make targets:
 ```bash
 make setup       # installs the package + playwright and browsers
 make run-demo    # python -m seeact.seeact
-make run-auto    # python -m seeact.seeact -c src/seeact/config/auto_mode.toml
+make run-auto    # python -m seeact.seeact
 make test-smoke  # pytest -q -m smoke
 make test-int    # pytest -q -m integration
 make run-runner  # run at-scale runner with --verbose
@@ -133,6 +133,21 @@ Artifacts:
 - Prompts: `data/personas/prompts/shop_prompt_<persona_id>.py`
 - Vocab: `data/personas/vocab.json`
 
+LLM rendering (optional):
+- Add `--use-llm` to generate prompts via an LLM instead of the deterministic template.
+- Example:
+  - `PYTHONPATH=src python -m personas.cli generate-prompts --site-domain yourstore.com --ids-file persona_ids.json --data-dir data/personas --out-dir data/personas/prompts --use-llm --llm-model gpt-4o-mini`
+- Environment: `OPENAI_API_KEY` required (and optional `OPENAI_BASE_URL` for OpenAI-compatible backends). You can also set `PERSONAS_LLM_MODEL`.
+- Validation: the CLI checks for required UXAgent sections and the exact site domain; invalid LLM output falls back to the deterministic template automatically.
+
+Manifest-aware vocabulary (default):
+- When generating prompts, the CLI reads `site_manifest/<domain>.json` and merges confirmed selectors (search input, collection grid, variant widget, checkout CTA) into the persona prompt vocabulary.
+- Intents drive emphasis automatically:
+  - `hot` personas highlight CTAs and variant selectors.
+  - `warm` personas call out filters/sort controls.
+  - `cold` personas lean on search inputs and collection grids.
+- Disable with `--no-manifest-taxonomy` or point at a custom directory via `--manifest-dir`.
+
 ### Build 1,000 Personas (Reusable Pool)
 
 Personas are built once per calibration window and reused across many experiments. There are two paths: DB‑backed (Neon) and local‑only (no DB) for quick iteration.
@@ -171,6 +186,17 @@ PYTHONPATH=src python -m personas.cli scrape-vocab --site https://yourstore.com 
 PYTHONPATH=src python -m personas.cli generate-prompts --site-domain yourstore.com --ids-file persona_ids.json --data-dir data/personas --out-dir data/personas/prompts --include-vocab
 ```
 
+- With LLM rendering (and vocab):
+```bash
+PYTHONPATH=src python -m personas.cli generate-prompts \
+  --site-domain yourstore.com \
+  --ids-file persona_ids.json \
+  --data-dir data/personas \
+  --out-dir data/personas/prompts \
+  --include-vocab \
+  --use-llm --llm-model gpt-4o-mini --llm-temperature 0.2
+```
+
 3) Reuse with the runner
 - Convert the 1000 pool to a runner YAML and run tasks sampled across personas:
 ```bash
@@ -187,15 +213,37 @@ print('Wrote', out, 'count:', len(ids))
 PY
 
 python -m seeact.runner \
-  -c src/seeact/config/auto_mode.toml \
+  -c config/base.toml \
   --tasks "$(pwd)/data/online_tasks/sample_tasks.json" \
   --metrics-dir runs/personas_local \
   --concurrency 4 --verbose \
-  --personas "$(pwd)/data/personas/runner_personas.yaml"
+ --personas "$(pwd)/data/personas/runner_personas.yaml"
 ```
 
 4) Concurrency notes
-- The runner can’t exceed the number of tasks queued; to utilize `--concurrency N`, ensure your tasks file has at least N tasks (unique `task_id`). Browserbase and model rate‑limits can also cap effective concurrency.
+- The runner can’t exceed the number of tasks queued; to utilize `--concurrency N`, ensure your tasks file has at least N tasks (unique `task_id`). Browserbase and model rate-limits can also cap effective concurrency.
+
+### Persona Calibration (null-hypothesis loop)
+
+- Collect a synthetic run using the runner (metrics JSONL).
+- Prepare GA cohort targets (`ga_targets.json`):
+```json
+{
+  "personas": {
+    "pid1": {"target_cr": 0.075, "target_dwell": 32},
+    "pid2": {"target_cr": 0.045}
+  }
+}
+```
+- Calibrate persona knobs to match GA conversion/dwell:
+```bash
+python -m seeact.calibrate \
+  --personas data/personas/personas.yaml \
+  --ga-targets data/personas/ga_targets.json \
+  --metrics runs/run_xxxx/metrics.jsonl \
+  --out data/personas/personas_calibrated.yaml
+```
+- Outputs maintain the original schema plus a `calibration` stanza per persona (target vs observed, attempts, timestamp) and clip adjustments to reasonable bands.
 
 ### API Reference (Personas‑only)
 - `POST /v1/personas/generate-master` — builds 1000 pool; flags: `window_days`, `window_end?`, `include_prompts?`, `include_summary?`, `persist_db?`, `persist_local?`, `site_domain?`. Returns `{ pool_id, window_end, count, artifacts, summary }`.
@@ -257,10 +305,21 @@ Build once per calibration window and reuse across experiments:
 
 ## Configuration
 
-- All configs are TOML files in `src/seeact/config/`.
-- Demo mode defaults to `src/seeact/config/demo_mode.toml`.
-- Auto mode uses `src/seeact/config/auto_mode.toml` with `task_file_path` pointing to a JSON file of tasks.
+- Base settings live in `config/base.toml`; optional overlays reside in `config/profiles/*.toml` (e.g., `demo`, `browserbase`, `openai_finetune`).
+- Demo mode: `python -m seeact.seeact --profile demo`.
+- Auto mode: `python -m seeact.seeact` (uses `config/base.toml`).
 - Keep `monitor = true` during development to review each action before execution.
+
+### Site Manifests & Prompt Pack v2
+
+- Deterministic scraping populates `site_manifest/<domain>.json` with selectors for search, collection grids, PDP actions, cart/checkout, and overlay close buttons.
+- Generate/update a manifest:
+  ```bash
+  python -m seeact.manifest.scrape example.com --max-pages 3
+  ```
+  (outputs `site_manifest/example.com.json`; respects `robots.txt` unless you override Playwright behavior).
+- The agent consults the manifest first for prompts/macros (e.g., product selectors, add-to-cart). If no manifest (or selector) is found, it falls back to generic heuristics.
+- Configure cache settings via `[manifest]` in `config/base.toml` (e.g., `cache_dir`, `refresh_days`).
 
 ### Runtime: Local vs Browserbase (CDP)
 
@@ -280,7 +339,7 @@ project_id = "${BROWSERBASE_PROJECT_ID}"  # required
 
 ### Models & Fine‑Tunes
 
-- Change model in TOML: edit `[openai].model` in `src/seeact/config/*.toml`.
+- Change model in TOML: edit `[openai].model` in `config/base.toml` or an overlay profile.
   - Examples (OpenAI):
     - `gpt-4o` (default)
     - `gpt-4o-mini`
@@ -359,7 +418,7 @@ export OPENAI_API_KEY=sk-...
 export SEEACT_MODEL=your-oss-model
 ```
 
-Or in TOML (e.g., `src/seeact/config/demo_mode.toml`):
+Or in TOML (e.g., `config/profiles/demo.toml`):
 ```toml
 [openai]
 base_url = "https://your-gpt-oss.example/v1"
@@ -382,22 +441,22 @@ Notes:
 ## At-Scale Runner
 
 - Best practice for batches: use the runner (concurrent, resilient, observable). Auto mode is sequential and best for quick repros or demos.
-- Configure `[runner]` and `[runtime]` in your TOML (see `src/seeact/config/*.toml`).
+- Configure `[runner]` and `[runtime]` in your TOML (see `config/base.toml` and `config/profiles/*.toml`).
 - Prepare a tasks JSON (same shape as `data/online_tasks/sample_tasks.json`).
 
 Run with defaults from config:
 ```bash
-python -m seeact.runner -c src/seeact/config/auto_mode.toml --verbose
+python -m seeact.runner -c config/base.toml --verbose
 ```
 
 Override at CLI:
 ```bash
-python -m seeact.runner -c src/seeact/config/auto_mode.toml \
+python -m seeact.runner -c config/base.toml \
   --tasks data/online_tasks/sample_tasks.json \
   --concurrency 20 \
   --metrics-dir runs/$(date +%Y%m%d_%H%M%S)
 ```
-Metrics: JSONL written under `runs/run_<id>/metrics.jsonl` with `run_start|task_start|task_retry|task_error|task_complete|run_complete` events.
+Metrics: JSONL written under `runs/run_<id>/metrics.jsonl` with `run_start|task_start|task_retry|task_error|task_complete|run_complete` events. `task_complete` entries include `step_metrics` (per-step scan/LLM timing and macro usage).
 Tip: use `--verbose` to print a concise progress log to stdout. To follow detailed events:
 ```bash
 tail -f runs/run_*/metrics.jsonl
@@ -408,7 +467,7 @@ Persona-weighted sampling:
 - Runner maps persona_ids to sites by prefix (e.g., `tommyjohn_...` → tommyjohn.com) and samples personas by `weight`.
 - Example:
 ```bash
-python -m seeact.runner -c src/seeact/config/auto_mode.toml \
+python -m seeact.runner -c config/base.toml \
   --tasks data/online_tasks/sample_tasks.json \
   --personas data/personas/sample_personas.yaml \
   --concurrency 6 --verbose
@@ -423,55 +482,37 @@ Outputs:
 
 ### Browserbase/CDP at Scale (A/B trial pattern)
 
-- Config: use `src/seeact/config/runner_browserbase.toml` (provider="browserbase"). Set env vars:
+- Config: apply the `browserbase` profile (provider="browserbase"). Set env vars:
   - `export BROWSERBASE_API_KEY=bb_...`
   - `export BROWSERBASE_PROJECT_ID=...`
   - `export OPENAI_API_KEY=sk-...`
+- Runner reuses a single Browserbase session per worker; set `--concurrency` (or `[runner].concurrency`) to stay within your active-session quota.
 
-- Optional session options (passed through to Browserbase):
-  - Add under `[runtime.session_options]` in your TOML to tune reliability and speed. Common flags:
-    - `stealth = true` (reduce automation signals)
-    - `blockAds = true` (block ads/trackers to speed loads)
-    - `locale = "en-US"`, `timezoneId = "America/Los_Angeles"`
-    - `userAgent = "Mozilla/5.0 ... Chrome/... Safari/537.36"`
-    - `viewport.width = 1024`, `viewport.height = 600`
-    - `extraHTTPHeaders = [{ name = "Accept-Language", value = "en-US,en;q=0.9" }]`
-    - Optional: `geolocation.*`, `proxy.*`, `extensions`
-  - Example:
-```toml
-[runtime]
-provider   = "browserbase"
-project_id = "${BROWSERBASE_PROJECT_ID}"
-
-[runtime.session_options]
-stealth = true
-blockAds = true
-locale = "en-US"
-timezoneId = "America/Los_Angeles"
-userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-viewport.width = 1024
-viewport.height = 600
-extraHTTPHeaders = [{ name = "Accept-Language", value = "en-US,en;q=0.9" }]
-```
+- Optional session options (only use keys supported by your Browserbase API version). Safe examples:
+  - `[runtime.session_options]`
+  - `viewport.width / viewport.height`
+  - `userAgent`
+  - `extraHTTPHeaders = [{ name = "Accept-Language", value = "en-US,en;q=0.9" }]`
+  - Avoid undocumented flags; invalid keys will cause a 400 validation error.
 
 - A/B split: create two task files of 500 tasks each, `tasks_A.json` and `tasks_B.json` (identical content or tagged with `_variant`).
 
 - Launch (single-process example):
 ```bash
 # Variant A (500 tasks)
-python -m seeact.runner -c src/seeact/config/runner_browserbase.toml \
+python -m seeact.runner -c config/base.toml --profile browserbase \
   --tasks data/online_tasks/tasks_A.json \
   --metrics-dir runs/AB_A --concurrency 25 --verbose
 
 # Variant B (500 tasks)
-python -m seeact.runner -c src/seeact/config/runner_browserbase.toml \
+python -m seeact.runner -c config/base.toml --profile browserbase \
   --tasks data/online_tasks/tasks_B.json \
   --metrics-dir runs/AB_B --concurrency 25 --verbose
 ```
 
 - Sharding for higher throughput: split each 500‑task file into N shards and launch N processes in parallel per side (e.g., 20 shards × `--concurrency 25` ≈ 500 concurrent agents). Use separate `--metrics-dir` per process (they will each create `run_<id>` subfolders).
 
-Note: The runner currently creates one Browserbase session per task. A future optimization (commented in code) is to reuse a single session per worker to reduce cold starts and avoid burst limits; we’ve left the sketch in `seeact/runner.py` for later adoption.
+Note: The runner maintains one Browserbase session per worker; adjust concurrency to meet Browserbase’s session quotas.
 
 
 Tasks path resolution:
@@ -493,7 +534,8 @@ Note on auto mode:
 
 ### Macros (Recipe‑Lite) & Config
 
-- The agent uses a small set of deterministic macros to progress common flows (collection → PDP → variant → Add to Cart → checkout) without site‑specific code.
+- The agent uses a small set of deterministic macros to progress common flows (collection → PDP → variant → Add to Cart → checkout) without site-specific code.
+- Collection pages with inline “quick add” forms are treated as non-PDP surfaces, so the macro bias opens the product page before attempting an Add to Cart. This avoids skipping required variant selections and works across storefronts that expose `/collections/` quick-add widgets.
 - Targeting is structural (anchors under product grid, visible/position‑based) with a light bias from task‑derived keywords (parsed from `confirmed_task`). No fixed product word lists are hardcoded.
 - You can adjust selectors in TOML (optional):
 ```toml
@@ -527,20 +569,21 @@ timeout_sec = 20
 - Personas (optional): YAML file with weighted personas; runner maps persona ids to sites by prefix and samples by weight.
 - Runtime providers: `local`, `cdp`, or `browserbase` via `[runtime]` in TOML. For Browserbase, use `[runtime.session_options]` to enable `stealth`, `blockAds`, `locale`, `timezoneId`, `userAgent`, `viewport`, `extraHTTPHeaders`, etc.
 - Experiment knobs: `[experiment]` includes `top_k`, `fixed_choice_batch_size`, `dynamic_choice_batch_size`, `include_dom_in_choices`, `max_op`, and visual aids (`monitor`, `highlight`).
+- Recommendations: when tasks carry a `"recommendations"` array, the runner gates each suggestion against the site manifest—e.g., a "size selector smoothing" playbook is dropped unless the manifest confirms a variant widget. Gated recommendations are written into `metrics.jsonl` under `blocked_recommendations` for downstream analytics.
 
 ## Recently Shipped
 
 - Runner & Orchestration: async worker pool with retries/timeouts and JSONL metrics.
   - Code: `src/runner.py`
-  - Config: `[runner]` sections in `src/seeact/config/demo_mode.toml`, `src/seeact/config/auto_mode.toml`, `src/seeact/config/online_exp.toml`
+  - Config: `[runner]` sections in `config/base.toml` (override via profiles as needed)
   - Metrics: `runs/run_<id>/metrics.jsonl`
   - Make: `make run-runner`
   - Tests: `tests/test_runner_smoke.py`
 - CDP/Browserbase runtime support for concurrency at scale.
   - Code: `src/seeact/seeact.py` and `src/seeact/agent.py` (`chromium.connect_over_cdp`)
-  - Config: `[runtime]` in `src/seeact/config/*.toml`
+  - Config: `[runtime]` in `config/base.toml`/profiles
 - Default model updated to `gpt-4o` (replaced deprecated `gpt-4-vision-preview`).
-  - Config: `[openai].model` in `src/seeact/config/*.toml`
+  - Config: `[openai].model` in `config/base.toml`/profiles
  - OpenAI client: switched gpt‑4o path to the official OpenAI Python client for quieter, predictable behavior.
  - Unified loop across providers: The same multi‑turn interaction loop now executes for `local`, `cdp`, and `browserbase` runtimes (including auto‑dismiss of overlays and DOM‑augmented choices).
 
@@ -784,7 +827,7 @@ scripts/demo_e2e.sh \
 - At-scale runner & metrics sink: worker orchestration with concurrency controls, run IDs/trace IDs, retries/backpressure; structured metrics/logs to a sink (e.g., JSONL/S3/BigQuery/Prometheus/Datadog).
 - AVI bridge: minimal clients and payload schemas for Optimizely/VWO/Kameleoon; gated sampling/ratelimiting; result collection.
 - Reporting: aggregate runs into variant vs control diffs; estimate uplift with uncertainty/error bars; acceptance gates; generate HTML/JSON reports with links to traces and screenshots.
-- Config & docs: extend TOML with `[metrics]`, `[patch]`, `[avi]`, `[report]`; provide sample configs, persona-driven run examples, and patch file examples; add `src/seeact/config/README.md`.
+- Config & docs: extend TOML with `[metrics]`, `[patch]`, `[avi]`, `[report]`; provide sample configs, persona-driven run examples, and patch file examples; add `config/README.md`.
 - Testing & observability: unit/integration tests for patcher, network stubs, mocked checkout, calibration, reporting, and the runner; golden fixtures for diffs; structured log schema and dashboards.
 - Architecture hygiene: consolidate on the package agent (`src/seeact/agent.py`) and keep `src/seeact/seeact.py` as a thin CLI wrapper to avoid drift; unify tracing/DOM snapshot behavior.
 

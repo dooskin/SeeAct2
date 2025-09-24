@@ -12,7 +12,7 @@ profile: new mobile user on Android, unknown, 18-24, from US:TX, source=ads, int
 metrics: cr≈3.0%  bounce≈46.7%  dwell≈28s  backtrack≈10.0%  form_err≈3.7%
 
 # GOAL
-Navigate hijabkart.in and add one plausible product to cart. Do not pay. Return price/variant/subtotal.
+Navigate yourdomain.com and add one plausible product to cart. Do not pay. Return price/variant/subtotal.
 
 # ACTIONS  (only these verbs)
 OPEN(url) | CLICK(text|selector) | TYPE(selector, text) | ENTER | SCROLL(dir|amount) | FILTER(name=value) | ADD_TO_CART | VIEW_CART
@@ -25,11 +25,6 @@ Each step <= 1 action. Prefer exact on-screen labels.
 - returning: reuse obvious nav routes; accept cookies quickly.
 - mobile: keep steps minimal; avoid opening many tabs.
 - prefer site-native CTAs and filter labels verbatim.
-
-# SITE_VOCAB  (include this block only if vocabulary is provided)
-collections: 
-filters: 
-ctas: 
 
 # STOP
 Stop when item is in cart OR you’re stuck after 2 failed attempts. Never proceed to payment.

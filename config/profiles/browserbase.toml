@@ -1,0 +1,14 @@
+[runtime]
+provider   = "browserbase"
+project_id = "${BROWSERBASE_PROJECT_ID}"
+# api_base is optional; if unset, SDK default is used. You may also set
+# BROWSERBASE_API_BASE in your environment.
+# api_base = "${BROWSERBASE_API_BASE}"
+
+# Note: Only include documented session options your Browserbase API supports.
+# Common safe fields:
+# [runtime.session_options]
+# viewport.width  = 1024
+# viewport.height = 600
+# userAgent = "Mozilla/5.0 ..."
+# extraHTTPHeaders = [{ name = "Accept-Language", value = "en-US,en;q=0.9" }]

@@ -57,8 +57,8 @@ async def test_runtime_cdp_env_expansion_and_connect(monkeypatch, tmp_path):
 
     dummy_pa.async_playwright = lambda: DummyAP()
     dummy_pa.Locator = object
-    sys.modules.setdefault("playwright", types.SimpleNamespace(async_api=dummy_pa))
-    sys.modules.setdefault("playwright.async_api", dummy_pa)
+    sys.modules["playwright"] = types.SimpleNamespace(async_api=dummy_pa)
+    sys.modules["playwright.async_api"] = dummy_pa
 
     # Import agent after stubbing
     from pathlib import Path

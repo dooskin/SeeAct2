@@ -153,6 +153,7 @@ def build_master_pool(
     window_end: Optional[datetime] = None,
     k_anon: int = 50,
     unknown_drop_threshold: float = 0.7,
+    pool_size: int = 1000,
 ) -> List[Dict[str, Any]]:
     """Normalize cohorts → personas with persona_id and metrics; then produce exactly 1000 entries.
 
@@ -261,15 +262,15 @@ def build_master_pool(
     personas_sorted = sorted(personas, key=lambda x: x["metrics"]["sessions"], reverse=True)
     N = len(personas_sorted)
     pool: List[Dict[str, Any]] = []
-    if N >= 1000:
-        pool = personas_sorted[:1000]
+    if N >= pool_size:
+        pool = personas_sorted[:pool_size]
         # If fewer than 1000 after cut (not possible), sample remainder; else exactly 1000
     else:
         pool = personas_sorted.copy()
         # sample remainder with replacement weighted by sessions
         ids = [p["persona_id"] for p in personas_sorted]
         weights = [p["metrics"]["sessions"] for p in personas_sorted]
-        replicas = _weighted_sample(ids, weights, 1000 - N)
+        replicas = _weighted_sample(ids, weights, pool_size - N)
         index = {p["persona_id"]: p for p in personas_sorted}
         for ridx, pid in enumerate(replicas):
             base = index[pid]
@@ -296,4 +297,3 @@ def save_pool_artifacts(pool: List[Dict[str, Any]], data_dir: Optional[str] = No
         for rec in pool:
             f.write(_yaml_str(rec) + "\n")
     return {"jsonl": str(jsonl_path), "yaml": str(yaml_path)}
-

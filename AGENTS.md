@@ -2,18 +2,19 @@
 
 ## Project Structure & Module Organization
 - `src/seeact/seeact.py`: Package CLI entry (demo/auto modes).
-- `src/seeact/config/*.toml`: Configs for demo, auto, and online experiments.
+- `config/base.toml` + `config/profiles/*.toml`: Layered settings for demo/auto/browserbase experiments.
 - `src/{demo_utils,data_utils,offline_experiments}/`: Runtime helpers and experiment scripts.
 - `src/seeact/*`: Installable Python package (src/ layout). `pyproject.toml` defines packaging metadata.
 - `data/`: Sample tasks and example artifacts (large files should not be committed).
+- `site_manifest/`: JSON manifests of domain-specific selectors for prompts/macros.
 - `README.md`, `LICENSE`, `CODE_OF_CONDUCT.md`: Docs and policies.
 
 ## Build, Test, and Development Commands
 - Create env: `conda create -n seeact python=3.11 && conda activate seeact`.
 - Install package (editable): `pip install -e .`.
 - Install browsers: `playwright install`.
-- Run demo mode: `python -m seeact.seeact` (uses `src/seeact/config/demo_mode.toml`).
-- Run auto mode: `python -m seeact.seeact -c src/seeact/config/auto_mode.toml`.
+- Run demo mode: `python -m seeact.seeact --profile demo`.
+- Run auto mode: `python -m seeact.seeact`.
 - Set API keys: `export OPENAI_API_KEY=...` (or `GEMINI_API_KEY=...`).
 
 ## Coding Style & Naming Conventions
@@ -21,7 +22,7 @@
 - Modules/functions: `snake_case`; classes: `PascalCase`; constants: `UPPER_SNAKE_CASE`.
 - Prefer type hints and short docstrings for public functions.
 - Keep side effects out of module import; guard CLIs with `if __name__ == "__main__":`.
-- Config files are TOML in `src/seeact/config/` (mirror existing names when adding new ones).
+- Config files live under `config/` (base + profiles).
 
 ## Testing Guidelines
 - Framework: pytest
@@ -50,9 +51,14 @@
 - The extraction is best‑effort and generic (order summary/cart rows); no site‑specific code paths.
 
 ### Macros (Recipe‑Lite) without Overfitting
-- Macros prioritize structural cues (product anchors under `main`/`section[role='main']`, visible/position‑based scoring) with a light bias from task‑derived keywords. No fixed product wordlists are hardcoded.
-- Macro selectors/weights can be tuned via TOML `[macros]` (and optional per‑site overrides in the future) without code changes.
+- Macros prioritize structural cues (product anchors under `main`/`section[role='main']`, visible/position-based scoring) with a light bias from task-derived keywords. No fixed product wordlists are hardcoded.
+- Collection URLs (e.g., `/collections/`, `/category/`) explicitly skip inline quick-add forms, so the agent opens the PDP before firing Add to Cart—avoiding variant/size prompts from list views without hardcoding site logic.
+- Macro selectors/weights can be tuned via TOML `[macros]` (and optional per-site overrides in the future) without code changes.
 - A small LLM timeout + macro fallback keeps progress moving even if a model call stalls.
+- If a site manifest is available (`site_manifest/<domain>.json`), macros consult its selectors first (search, PDP, cart); otherwise they fall back to generic heuristics.
+- Persona prompts automatically incorporate manifest taxonomy: hot personas lean on CTAs/variants, warm personas highlight filters/sort controls, and cold personas mention search/collection scaffolding. Disable via `--no-manifest-taxonomy` when calling `personas.cli generate-prompts`.
+- Use `python -m seeact.calibrate` with GA targets + metrics JSONL to align persona buy-propensity/dwell with observed conversion curves. Calibrated personas embed a `calibration` stanza (target vs observed, attempts, timestamp).
+- Runner events now carry `recommendations`/`blocked_recommendations` so experiment pipelines can see which suggestions cleared the manifest gate (capability mapping: search input, filters, variant widget, add-to-cart, checkout CTA).
 
 ### Browserbase Options
 - We pass through any keys under `[runtime.session_options]` directly to the Browserbase sessions.create payload so you can tune reliability and speed without code changes. Common fields: `stealth`, `blockAds`, `locale`, `timezoneId`, `userAgent`, `viewport`, `extraHTTPHeaders`, optional `geolocation`, `proxy`, `extensions`.
