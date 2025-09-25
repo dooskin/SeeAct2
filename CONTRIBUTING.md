@@ -17,7 +17,7 @@ Welcome! This guide explains the repository layout, coding style, testing strate
   - `taxonomy.py`: Derives site vocabulary from manifests per persona intent
   - `scrape/`: Shopify vocab scraper (collections/products/filters/CTAs)
   - `cli.py`: Local, no-API CLI for seed-demo / sample / generate-prompts / scrape-vocab
-- `src/api/`: Personas-only FastAPI
+- `src/api/`: Personas‑only FastAPI
   - `main.py`: App factory + CORS
   - `routes/personas.py`: `/v1/personas/*` endpoints
 - `config/`: Configuration (e.g., `base.toml`, profiles/, `personas.yaml`)
@@ -36,6 +36,9 @@ Welcome! This guide explains the repository layout, coding style, testing strate
   - `tests/*smoke.py`: agent/runner/runtime smokes
   - `tests/*integration.py`: optional Playwright/OpenAI integration
 - `scripts/`: Utility scripts (e.g., `e2e_personas.py`)
+
+Note on CLI shim:
+- `src/personas_cli.py` is a lightweight wrapper that forwards to `seeact.personas.build_personas_yaml`; it exists for backward compatibility and test convenience.
 
 ## Coding Style
 
@@ -112,6 +115,23 @@ Artifacts live under `PERSONAS_DATA_DIR` (default `data/personas`).
 - [ ] No secrets in code/logs; use env vars; DSN precedence intact
 - [ ] Persona assets (UXAgent exemplars) unchanged unless updating vendor snapshot intentionally
 - [ ] Calibration loop covered by unit tests when adjusting persona schemas
+
+## API & Migrations (Planning Checklist)
+
+- [TODO] GA–Neon adapter: implement `fetch_ga_snapshot_neon(site_id, window)` and `fetch_funnel_metrics_neon(site_id, window)`; read from `NEON_DATABASE_URL` / `NEON_SCHEMA`; mirror UXAgent bucketing.
+- [TODO] SSE plumbing: publisher/consumer wiring and integration tests (TestClient), with `:ka` heartbeat every 15s.
+- [TODO] DB migrations: `calibrations`, `ga_snapshots`, `traffic_distributions`, `event_rates`, `experiments`, `agent_sessions`, `variant_metrics`, `experiment_events`.
+- [TODO] Cost guardrail: estimator formula & provider hooks; tests for early termination and partial finalization.
+- [TODO] Bayesian stats option: module + unit tests for posteriors.
+- [TODO] Artifacts storage: GCS signed URLs; retention policy; signing service; tests for URL expiry.
+- [TODO] Pagination & filtering: `page`, `page_size` (default 50, max 200), `sort=-started_at`, filters (date range, `site_id`, `name ilike`).
+- [TODO] Changelog: add release notes when breaking changes are introduced.
+
+### Testing Guidance (APIs)
+- Orchestrators: mock Neon adapters; verify step transitions and SSE sequences.
+- SSE: connect, heartbeat `:ka`, event sequences; error paths.
+- Stats: two‑proportion z‑test; winner thresholds; edge cases (low n, high variance).
+- Artifacts stubs: assert response shapes and signing placeholders.
 
 ## Frequently Used Commands
 

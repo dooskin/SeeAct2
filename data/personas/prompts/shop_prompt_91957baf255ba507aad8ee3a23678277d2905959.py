@@ -12,7 +12,7 @@ profile: new mobile user on iOS, female, 25-34, from US:CA, source=organic, inte
 metrics: cr≈5.0%  bounce≈37.5%  dwell≈35s  backtrack≈10.0%  form_err≈3.8%
 
 # GOAL
-Navigate yourdomain.com and add one plausible product to cart. Do not pay. Return price/variant/subtotal.
+Navigate hijabkart.in and add one plausible product to cart. Do not pay. Return price/variant/subtotal.
 
 # ACTIONS  (only these verbs)
 OPEN(url) | CLICK(text|selector) | TYPE(selector, text) | ENTER | SCROLL(dir|amount) | FILTER(name=value) | ADD_TO_CART | VIEW_CART

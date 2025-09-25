@@ -11,7 +11,7 @@ top_k = 50
 fixed_choice_batch_size = 17
 dynamic_choice_batch_size = 1600
 max_continuous_no_op = 2
-max_op = 20
+max_op = 10
 highlight = false
 monitor = false
 dev_mode = false
@@ -47,8 +47,8 @@ longitude = 39.99542778404405
 latitude = -83.0068669912263
 
 [playwright.viewport]
-width = 1280
-height = 720
+width = 1024
+height = 600
 
 [playwright.trace]
 screenshots = true

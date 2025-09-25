@@ -1,0 +1,34 @@
+[
+  {
+    "task_id": "hijabkart_search_add_jerseyhijab",
+    "website": "https://hijabkart.in",
+    "confirmed_task": "On HijabKart, search for 'Jersey Hijab', open a black color variant, and add to cart.",
+    "recommendations": [
+      {
+        "id": "variant_smoothing",
+        "title": "Smooth size selector",
+        "capabilities": ["variant", "add_to_cart"],
+        "notes": "Ensure variant widget is visible before macro ATC."
+      },
+      {
+        "id": "enable_filters",
+        "title": "Highlight filters",
+        "capabilities": ["filters"],
+        "notes": "Suggest filters call-out if collection supports filters."
+      }
+    ]
+  },
+  {
+    "task_id": "hijabkart_filter_abayas_under_1000",
+    "website": "https://hijabkart.in",
+    "confirmed_task": "On HijabKart, open the Abayas collection and filter for items under ₹1000.",
+    "recommendations": [
+      {
+        "id": "checkout_flow",
+        "title": "Checkout happy-path",
+        "capabilities": ["checkout"],
+        "notes": "Follow-through checkout CTA if manifest confirms it."
+      }
+    ]
+  }
+]

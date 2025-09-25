@@ -78,3 +78,9 @@
 - Use env vars or a local `.env` (not committed) for keys. Never log secrets.
 - Keep `monitor = true` during development to review actions before execution.
 - Avoid automating login flows; follow the safety notes in `README.md`.
+
+## API Overview (Links)
+- Calibration Job API: one‑click wrapper + SSE; Neon Postgres is the v1 source of GA‑derived aggregates. Orchestrates Personas endpoints behind a single call. [TODO] Link to GA–Neon adapter once merged.
+- Experiments API: A/B orchestrator + SSE + stats + persistence. v1 provider: `browserbase`; Playwright local is [TODO].
+- Timeouts: default ~5 minutes per agent session (review and adjust as needed).
+- Canonical error modes: quota exceeded, invalid `site_id`, calibration not found, experiment already running, cost guardrail tripped, Neon query error, permission denied. See README for endpoint‑level codes.

@@ -17,9 +17,19 @@ SeeAct is an engineering-focused platform for building, running, and measuring a
 - `src/seeact/seeact.py`: Main entry point (demo/auto modes).
 - `config/base.toml` + `config/profiles/*.toml`: Layered settings for demo/auto/browserbase profiles.
 - `src/{seeact/demo_utils,seeact/data_utils,offline_experiments}/`: Runtime helpers and experiment scripts.
+  - `src/offline_experiments/` [DEPRECATED]: legacy scripts retained for reference only; not used in the current E2E flows.
 - `data/`: Sample tasks and example artifacts (large files should not be committed).
 - `tests/`: Pytest suites (smoke and integration as they are added).
 - `README.md`, `LICENSE`, `CODE_OF_CONDUCT.md`: Docs and policies.
+
+## API Overview
+
+- Base URL: https://www.squoosh.ai
+- Auth: `Authorization: Bearer <token>` (tenancy inferred from the token).
+- Site scoping: Every request includes a `site_id` that must belong to the caller’s org.
+- Versioning: Path-based only (e.g., `/v1/...`). [TODO] Add CHANGELOG entries when breaking changes are made.
+
+For a consolidated API reference (including SSE streams and data models) see: `API.md`.
 
 ## Quick Start
 
@@ -245,7 +255,97 @@ python -m seeact.calibrate \
 ```
 - Outputs maintain the original schema plus a `calibration` stanza per persona (target vs observed, attempts, timestamp) and clip adjustments to reasonable bands.
 
+### End-to-end Demo (HijabKart)
+
+Run a complete Phase‑4 demo on HijabKart using manifest‑aware LLM prompts, Browserbase, calibration, and recommendation gating.
+
+1) Environment
+```bash
+export OPENAI_API_KEY=sk-...
+export BROWSERBASE_API_KEY=bb_...
+export BROWSERBASE_PROJECT_ID=...
+export BROWSERBASE_API_BASE="https://api.browserbase.com/v1"
+```
+
+2) Reset prompts and sample personas
+```bash
+rm -f data/personas/prompts/shop_prompt_*.py
+PYTHONPATH=src python -m personas.cli sample \
+  --size 5 \
+  --ids-out persona_ids.json \
+  --data-dir data/personas
+```
+
+3) Generate prompts for hijabkart.in (manifest‑aware + LLM)
+```bash
+PYTHONPATH=src python -m personas.cli generate-prompts \
+  --site-domain hijabkart.in \
+  --ids-file persona_ids.json \
+  --data-dir data/personas \
+  --out-dir data/personas/prompts \
+  --use-llm --llm-model gpt-4o-mini --llm-temperature 0.2 \
+  --manifest-dir site_manifest
+```
+
+4) Ensure a personas YAML exists (demo path)
+```bash
+PYTHONPATH=src python -m personas.cli seed-demo --data-dir data/personas
+# result: data/personas/personas.yaml
+```
+
+5) Run Browserbase batch (writes metrics.jsonl)
+```bash
+python -m seeact.runner \
+  -c config/base.toml \
+  --profile browserbase \
+  --tasks data/online_tasks/hijabkart_phase4_tasks.json \
+  --personas data/personas/personas.yaml \
+  --metrics-dir runs/hijabkart_phase4 \
+  --concurrency 1 \
+  --verbose
+```
+
+6) Calibrate personas with collected metrics
+```bash
+python -m seeact.calibrate \
+  --personas data/personas/personas.yaml \
+  --ga-targets data/personas/ga_targets.json \
+  --metrics runs/hijabkart_phase4/run_<id>/metrics.jsonl \
+  --out data/personas/personas_calibrated.yaml
+```
+
+7) Rerun using calibrated personas
+```bash
+python -m seeact.runner \
+  -c config/base.toml \
+  --profile browserbase \
+  --tasks data/online_tasks/hijabkart_phase4_tasks.json \
+  --personas data/personas/personas_calibrated.yaml \
+  --metrics-dir runs/hijabkart_phase4_calibrated \
+  --concurrency 1 \
+  --verbose
+```
+
+8) Inspect gated recommendations
+```bash
+tail -n 40 runs/hijabkart_phase4_calibrated/run_*/metrics.jsonl | jq '.event, .recommendations, .blocked_recommendations'
+```
+
 ### API Reference (Personas‑only)
+Table of contents (additional APIs below):
+- [Calibration Job API](#calibration-job-api)
+  - [Overview](#calibration-job-overview)
+  - [Endpoints](#calibration-job-endpoints)
+  - [Event Stream (SSE)](#calibration-job-sse)
+  - [Data Model](#calibration-job-data-model)
+  - [End-to-end Flow](#calibration-job-e2e)
+- [Experiments API](#experiments-api)
+  - [Overview](#experiments-overview)
+  - [Endpoints](#experiments-endpoints)
+  - [Event Stream (SSE)](#experiments-sse)
+  - [Data Model](#experiments-data-model)
+  - [A/B Assignment & Stats](#experiments-ab-and-stats)
+  - [End-to-end Flow](#experiments-e2e)
 - `POST /v1/personas/generate-master` — builds 1000 pool; flags: `window_days`, `window_end?`, `include_prompts?`, `include_summary?`, `persist_db?`, `persist_local?`, `site_domain?`. Returns `{ pool_id, window_end, count, artifacts, summary }`.
 - `GET /v1/personas/` — paginated list from local snapshot.
 - `POST /v1/personas/sample` — `{ size, strategy: weighted|stratified }` → sampled personas.
@@ -480,12 +580,271 @@ Outputs:
   - Set in TOML: `[basic] save_file_dir = "/Users/<you>/Downloads/seeact_artifacts"`
   - CLI for metrics: `--metrics-dir "/Users/<you>/Downloads/seeact_runs"`
 
+## Calibration Job API
+
+### Calibration Job Overview
+One-click wrapper around the Calibrate UX. Drives: snapshot GA-derived traffic from Neon Postgres → build 1,000 prompts proportional to traffic → populate feature pies (real vs synthetic) → populate behavior-match (real + synthetic targets) → stream progress via SSE.
+
+- Why: Personas endpoints exist, but UX needs a single call + live progress for the “Calibrate” button.
+- Data source (v1): GA-derived data is pulled from the Neon Postgres database (not GA4 API). `site_id` is used to query Neon tables for the latest window of traffic/metrics.
+- Implementation scaffolding [TODO]:
+  - GA–Neon adapter that reads normalized GA traffic & funnel metrics from Neon.
+  - Env vars: `NEON_DATABASE_URL` (required), `NEON_SCHEMA` (optional, default `public`).
+  - Expected tables (names TBD — follow current schema in this repo): `traffic_snapshots` and `funnel_metrics` for the current window.
+
+What it does (7 steps):
+1) Fetch & snapshot Neon traffic for `site_id` (normalized + fingerprint) and persist.
+2) Generate 1,000 prompts proportional to distributions; encode site purchase rate; persist.
+3) Write real traffic distributions (inner pie).
+4) Write synthetic distributions aggregated from prompts (outer pie).
+5) Write real funnel rates (six Shopify events).
+6) Write synthetic target funnel rates (v1 equals real; later may derive from prompt metadata).
+7) Emit SSE waypoints; mark job complete.
+
+Idempotency: Send `Idempotency-Key`; server also dedupes by snapshot fingerprint within 30 minutes per `site_id`.
+
+### Calibration Job Endpoints
+
+POST `/v1/calibrations`
+- Headers: `Authorization: Bearer <token>`, `Idempotency-Key: <uuid>` (recommended)
+- Body:
+```json
+{ "site_id": "hijabkart.in", "seed": 12345 }
+```
+- 201:
+```json
+{ "calibration_id": "a0a1f2e4-5b6c-47d2-a3f9-20b7c3b1ad50", "status": "queued" }
+```
+
+GET `/v1/calibrations/{calibration_id}`
+```json
+{ "status": "running", "steps": [
+  {"name":"fetch_ga_snapshot_neon","status":"complete"},
+  {"name":"generate_prompts","status":"running"}
+], "metrics": {"num_prompts": 1000} }
+```
+
+GET `/v1/calibrations/{calibration_id}/features`
+```json
+{ "distributions": [
+  {"dimension":"source_medium","kind":"real","buckets":[{"bucket":"google / organic","pct":0.38},{"bucket":"direct","pct":0.44}]},
+  {"dimension":"source_medium","kind":"synthetic","buckets":[{"bucket":"google / organic","pct":0.38},{"bucket":"direct","pct":0.44}]},
+  {"dimension":"device_category","kind":"real","buckets":[{"bucket":"desktop","pct":0.59},{"bucket":"mobile","pct":0.41}]},
+  {"dimension":"device_category","kind":"synthetic","buckets":[{"bucket":"desktop","pct":0.59},{"bucket":"mobile","pct":0.41}]},
+  {"dimension":"geo_bucket","kind":"real","buckets":[{"bucket":"United States","pct":0.27},{"bucket":"India","pct":0.06}]},
+  {"dimension":"geo_bucket","kind":"synthetic","buckets":[{"bucket":"United States","pct":0.27},{"bucket":"India","pct":0.06}]}
+]}
+```
+
+GET `/v1/calibrations/{calibration_id}/behavior-match`
+```json
+{ "real": [
+  {"event":"page_view","rate":1.0},
+  {"event":"view_item","rate":0.42},
+  {"event":"view_item_list","rate":0.61},
+  {"event":"add_to_cart","rate":0.09},
+  {"event":"begin_checkout","rate":0.014},
+  {"event":"purchase","rate":0.003}
+], "synthetic": [
+  {"event":"page_view","rate":1.0},
+  {"event":"view_item","rate":0.42},
+  {"event":"view_item_list","rate":0.61},
+  {"event":"add_to_cart","rate":0.09},
+  {"event":"begin_checkout","rate":0.014},
+  {"event":"purchase","rate":0.003}
+]}
+```
+Note: v1 sets synthetic == real. [TODO] Later derive synthetic targets from prompt metadata while keeping response shape stable.
+
+### Calibration Job SSE
+GET `/v1/calibrations/{calibration_id}/events` → `text/event-stream`
+- Emits (examples):
+  - `queued`
+  - `ga_snapshot_neon_complete`
+  - `prompts_generated { "count": 1000 }`
+  - `features_real_ready`
+  - `features_synth_ready`
+  - `behavior_real_ready`
+  - `behavior_synth_ready`
+  - `complete`
+  - `error { "message": "..." }`
+- Keep-alive: heartbeat comment every 15s: `:ka`
+
+### Calibration Job Data Model
+- `calibrations(id uuid, site_id text, status text, started_at timestamptz, finished_at timestamptz, ga_snapshot_id uuid, seed int, idempotency_key text, fingerprint text, error text)`
+- `ga_snapshots(id uuid, site_id text, taken_at timestamptz, window_start timestamptz, window_end timestamptz, payload_json jsonb, fingerprint text, purchase_rate float)` (Neon source in v1)
+- `traffic_distributions(calibration_id uuid, dimension text, bucket text, kind text check(kind in ('real','synthetic')), pct float)`
+- `event_rates(calibration_id uuid, event text, kind text check(kind in ('real','synthetic')), rate float)`
+- `synthetic_prompts(id uuid, calibration_id uuid, persona_id text, source_medium text, device_category text, geo_bucket text, encoded_purchase_rate float, prompt_text text)`
+- Privacy / bucket policy: replicate UXAgent bucket handling; no additional k‑anon beyond that. [TODO] Link to exact UXAgent refs later.
+
+### Calibration Job End-to-end Flow
+1) POST `/v1/calibrations`
+2) SSE: `queued` → `ga_snapshot_neon_complete`
+3) SSE: `prompts_generated` (count)
+4) SSE: `features_real_ready` → draw inner pies
+5) SSE: `features_synth_ready` → draw outer pies
+6) SSE: `behavior_*_ready` → draw behavior bars
+7) SSE: `complete` → UI shows “Calibrated”
+
+Examples (curl, base URL)
+- Start a calibration
+```bash
+curl -X POST https://www.squoosh.ai/v1/calibrations \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{"site_id":"hijabkart.in","seed":12345}'
+```
+- Stream calibration events (SSE)
+```bash
+curl -N https://www.squoosh.ai/v1/calibrations/<calibration_id>/events \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+## Experiments API
+
+### Experiments Overview
+Run 1,000 calibrated synthetic sessions split A/B between two URLs; stream funnel events; compute final CR & winner; persist results; list runs in In‑Progress and Ended tabs.
+
+- Inputs: variant A/B URLs, prior `calibration_id`; 50/50 assignment stratified by `(source_medium, device_category, geo_bucket)`.
+- Provider (v1): `browserbase` only. Playwright local/managed is [TODO].
+- Winner eligibility defaults: `min_per_arm = 200`, `min_completion_ratio = 0.80` (overridable in POST body).
+- Cost guardrail: `max_cost_usd` required (default 50.00). When exceeded, cancel remaining shards and finalize with partial data. [TODO]
+
+### Experiments Endpoints
+
+POST `/v1/experiments`
+- Headers: `Authorization: Bearer <token>`, `Idempotency-Key: <uuid>`
+- Body:
+```json
+{
+  "site_id": "hijabkart.in",
+  "name": "Homepage hero test",
+  "variant_a_url": "https://hijabkart.in/?v=a",
+  "variant_b_url": "https://hijabkart.in/?v=b",
+  "n_agents": 1000,
+  "calibration_id": "a0a1f2e4-5b6c-47d2-a3f9-20b7c3b1ad50",
+  "concurrency": 50,
+  "provider": "browserbase",
+  "model": "gpt-4o",
+  "max_cost_usd": 50.0,
+  "seed": 12345,
+  "min_per_arm": 200,
+  "min_completion_ratio": 0.8
+}
+```
+- 201:
+```json
+{ "experiment_id": "2c4efb77-4f2d-4f03-9a5f-1c74d3b9a6d9", "status": "queued" }
+```
+
+GET `/v1/experiments/{experiment_id}`
+```json
+{
+  "status": "running",
+  "name": "Homepage hero test",
+  "variant_a_url": "...",
+  "variant_b_url": "...",
+  "aggregates": {
+    "A": { "finished": 231, "purchases": 7, "cr": 0.0303 },
+    "B": { "finished": 228, "purchases": 11, "cr": 0.0482 }
+  },
+  "winner": null,
+  "lift_rel": null
+}
+```
+
+GET `/v1/experiments?status=in_progress|ended`
+```json
+[
+  {"id":"...","name":"...","date":"2025-09-20","lift_rel":0.443,"result":"Variant"}
+]
+```
+
+### Experiments SSE
+GET `/v1/experiments/{experiment_id}/events` → `text/event-stream`
+- Events:
+  - `queued`
+  - `agent_started { "session_id":"...", "variant":"A" }`
+  - `funnel_event  { "session_id":"...", "variant":"B", "event":"purchase" }`
+  - `progress      { "A":{...}, "B":{...} }`
+  - `complete      { "winner":"B", "lift_rel":0.21, "p_value":0.03 }`
+  - `error         { "message":"...", "session_id":"..."? }`
+- Keep‑alive: heartbeat comment every 15s: `:ka`
+
+GET `/v1/experiments/{experiment_id}/artifacts`
+```json
+{
+  "experiment_id": "…",
+  "artifacts": {
+    "summary_csv": "https://www.squoosh.ai/v1/experiments/{id}/summary.csv",
+    "variant_a_json": "https://www.squoosh.ai/v1/experiments/{id}/A.json",
+    "variant_b_json": "https://www.squoosh.ai/v1/experiments/{id}/B.json",
+    "agent_metrics_zip": "https://www.squoosh.ai/v1/experiments/{id}/metrics.zip"
+  }
+}
+```
+[TODO] Storage backend is GCS with signed URLs; add retention policy and signing details later.
+
+### Experiments Data Model
+- `experiments(id uuid, site_id text, name text, status text, started_at timestamptz, finished_at timestamptz, variant_a_url text, variant_b_url text, n_agents int, seed int, provider text, model text, max_cost_usd numeric, result text, lift_abs numeric, lift_rel numeric, p_value numeric, error text)`
+- `agent_sessions(id uuid, experiment_id uuid, prompt_id uuid, variant text check(variant in ('A','B')), status text, started_at timestamptz, finished_at timestamptz, purchased boolean, metrics_path text, events_jsonb jsonb)`
+- `variant_metrics(experiment_id uuid, variant text, n int, purchases int, cr numeric, add_to_cart_rate numeric, begin_checkout_rate numeric, purchase_rate numeric)`
+- `experiment_events(id uuid, experiment_id uuid, ts timestamptz, type text, payload_jsonb jsonb)` (optional, for audits/SSE replay)
+
+### Experiments A/B and Stats
+- Stratification keys: `(source_medium, device_category, geo_bucket)` using prompt rows from the selected calibration.
+- Deterministic split: e.g., `hash(prompt_id, seed) % 2` → A/B.
+- Denominator: CR uses finished sessions; track timeouts/errors separately.
+- Winner defaults (overridable): `min_per_arm = 200`, `min_completion_ratio = 0.80`.
+- Stats (default): two‑proportion z‑test (pooled). Winner = higher CR if thresholds met and `p ≤ 0.05`.
+- [TODO] Bayesian option: Beta(1,1) priors; report `Pr(B>A)` and document threshold (e.g., ≥0.95).
+
+### Experiments End-to-end Flow
+1) POST `/v1/experiments` (A/B URLs + `calibration_id`)
+2) SSE: `queued` → sessions created/sharded
+3) Agents run; SSE emits `agent_started`, `funnel_event`, periodic `progress`
+4) All sessions finish or timebox hits → compute per‑variant CR & stats → persist `variant_metrics` + `experiments.result`
+5) SSE: `complete` (winner + p‑value) → UI shows Winner
+6) Dashboard tabs: In‑Progress (`GET /v1/experiments?status=in_progress`) and Ended (`GET /v1/experiments?status=ended`)
+
+Examples (curl)
+- Create an experiment
+```bash
+curl -X POST https://www.squoosh.ai/v1/experiments \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "site_id":"hijabkart.in",
+        "name":"Homepage hero test",
+        "variant_a_url":"https://hijabkart.in/?v=a",
+        "variant_b_url":"https://hijabkart.in/?v=b",
+        "n_agents":1000,
+        "calibration_id":"<from calibration>",
+        "concurrency":50,
+        "provider":"browserbase",
+        "model":"gpt-4o",
+        "max_cost_usd":50.0,
+        "seed":12345,
+        "min_per_arm":200,
+        "min_completion_ratio":0.8
+      }'
+```
+- Stream experiment events (SSE)
+```bash
+curl -N https://www.squoosh.ai/v1/experiments/<experiment_id>/events \
+  -H "Authorization: Bearer $TOKEN"
+```
+
 ### Browserbase/CDP at Scale (A/B trial pattern)
 
 - Config: apply the `browserbase` profile (provider="browserbase"). Set env vars:
   - `export BROWSERBASE_API_KEY=bb_...`
   - `export BROWSERBASE_PROJECT_ID=...`
   - `export OPENAI_API_KEY=sk-...`
+  - `export BROWSERBASE_API_BASE="https://api.browserbase.com/v1"`
 - Runner reuses a single Browserbase session per worker; set `--concurrency` (or `[runner].concurrency`) to stay within your active-session quota.
 
 - Optional session options (only use keys supported by your Browserbase API version). Safe examples:
@@ -570,6 +929,9 @@ timeout_sec = 20
 - Runtime providers: `local`, `cdp`, or `browserbase` via `[runtime]` in TOML. For Browserbase, use `[runtime.session_options]` to enable `stealth`, `blockAds`, `locale`, `timezoneId`, `userAgent`, `viewport`, `extraHTTPHeaders`, etc.
 - Experiment knobs: `[experiment]` includes `top_k`, `fixed_choice_batch_size`, `dynamic_choice_batch_size`, `include_dom_in_choices`, `max_op`, and visual aids (`monitor`, `highlight`).
 - Recommendations: when tasks carry a `"recommendations"` array, the runner gates each suggestion against the site manifest—e.g., a "size selector smoothing" playbook is dropped unless the manifest confirms a variant widget. Gated recommendations are written into `metrics.jsonl` under `blocked_recommendations` for downstream analytics.
+
+## Changelog [TODO]
+<!-- Add entries when API or CLI breaking changes ship. Document migration steps and version notes here. -->
 
 ## Recently Shipped
 
