@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .routes.personas import router as personas_router
+from .routes.calibrations import router as calibrations_router
 
 
 def _parse_cors() -> list[str]:
@@ -22,6 +23,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.include_router(personas_router, prefix="/v1/personas")
+    app.include_router(calibrations_router, prefix="/v1/calibrations")
     return app
 
 
