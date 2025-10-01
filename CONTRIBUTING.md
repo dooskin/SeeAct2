@@ -147,6 +147,74 @@ Thanks for contributing and keeping the personas layer decoupled and testable!
 ## Architecture (ASCII Overview)
 
 ```
+                      +---------------------------+
+                      |        Frontend (UI)      |
+                      | Calibrate / Experiments   |
+                      +------------+--------------+
+                                   |
+                         HTTPS (FastAPI, SSE)
+                                   v
+        +-----------------------------------------------+
+        |          Application Service (/v1/...)         |
+        |                                               |
+        |  +-------------------+      +----------------+ |
+        |  | Personas API      |      | Calibration    | |
+        |  | /v1/personas/*    |      | Orchestrator   | |
+        |  +---------+---------+      | /v1/calibrations| |
+        |            |                +---------+------+ |
+        |            | Personas       SSE       |        |
+        |            v progress                |         |
+        |  +-----------------------+           |         |
+        |  | Personas Adapter      |           |         |
+        |  | (GA/Neon read) [TODO] |<----------+         |
+        |  +----------+------------+                     |
+        |             | Neon data                         |
+        |             v                                    |
+        |  +-----------------------+                       |
+        |  | Personas Builder      |                       |
+        |  | 1,000 pool, k-anon    |                       |
+        |  +----------+------------+                       |
+        |             | synthetic prompts                  |
+        |             v                                    |
+        |  +-----------------------+                       |
+        |  | Prompt Renderer       |                       |
+        |  | UXAgent-aligned text  |                       |
+        |  +-----------+-----------+                       |
+        |              | persists prompts                  |
+        |              v                                    |
+        |  +-----------------------+        +------------+ |
+        |  | Postgres (personas,   |<-------| SSE events | |
+        |  | prompts, distributions|        +------------+ |
+        |  +-----------+-----------+                       |
+        |              |                                    |
+        |  +-----------------------+                       |
+        |  | Experiments           |                       |
+        |  | Orchestrator          |                       |
+        |  | /v1/experiments       |                       |
+        |  +-----------+-----------+                       |
+        |              | assigns A/B                       |
+        |              v                                    |
+        |  +-----------------------+                       |
+        |  | SeeAct Runner Fleet   | --CDP--> Browserbase  |
+        |  | (persona-weighted)    |           provider    |
+        |  +-----------+-----------+                       |
+        |              | metrics / artifacts [TODO]        |
+        |              v                                    |
+        |  +-----------------------+                       |
+        |  | Postgres (experiments,|                       |
+        |  | sessions, variant data)|                      |
+        +-----------------------------------------------+
+
+Legend:
+- Neon Postgres supplies GA-derived traffic/funnel metrics (Calibration) [TODO connector].
+- Application Service streams SSE events (`queued`, `prompts_generated`, `progress`, `complete`, etc.).
+- Runner executes synthetic sessions using Browserbase (local Playwright provider [TODO]).
+- Metrics/artifacts retention and signed URLs for experiments [TODO].
+```
+
+## Architecture (ASCII Overview)
+
+```
                    +---------------------------+
                    |        Frontend (UI)      |
                    |  Calibrate button, charts |
