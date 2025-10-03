@@ -18,9 +18,9 @@ from urllib.parse import urlparse
 import yaml
 
 from seeact.execution import execute_task
-from seeact.manifest import load_manifest
 from seeact.recommendations.gating import gate_recommendations
 from seeact.settings import load_settings, SettingsLoadError
+from seeact.utils.manifest_loader import load_manifest as load_manifest_from_dir, require_manifest_dir
 
 
 @dataclass
@@ -33,6 +33,31 @@ class RunnerConfig:
     metrics_dir: Path
     personas_path: Optional[Path]
     verbose: bool
+    manifest_dir: Path
+
+
+def _print_startup_banner(manifest_dir: Path) -> None:
+    try:
+        from importlib.metadata import version
+
+        pkg_version = version("seeact")
+    except Exception:
+        pkg_version = "unknown"
+    try:
+        import subprocess
+
+        commit = (
+            subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=Path(__file__).resolve().parents[2],
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+            .strip()
+        )
+    except Exception:
+        commit = "unknown"
+    print(f"[seeact] version={pkg_version} commit={commit} manifest_dir={manifest_dir}")
 
 
 class JsonlMetricsSink:
@@ -335,6 +360,10 @@ def _build_runner_config(settings: Dict[str, Any], args: argparse.Namespace) -> 
         personas_file = (settings.get("personas") or {}).get("file") if isinstance(settings.get("personas"), dict) else None
         if personas_file:
             personas_path = Path(personas_file).resolve()
+    manifest_cfg = settings.setdefault("manifest", {})
+    manifest_dir_value = args.manifest_dir or manifest_cfg.get("dir") or manifest_cfg.get("cache_dir")
+    manifest_dir = Path(manifest_dir_value).expanduser().resolve() if manifest_dir_value else Path.cwd() / "site_manifest"
+    manifest_cfg["dir"] = str(manifest_dir)
     return RunnerConfig(
         concurrency=int(args.concurrency or runner_cfg.get("concurrency", 10)),
         max_retries=int(runner_cfg.get("max_retries", 2)),
@@ -344,11 +373,16 @@ def _build_runner_config(settings: Dict[str, Any], args: argparse.Namespace) -> 
         metrics_dir=metrics_dir,
         personas_path=personas_path,
         verbose=bool(args.verbose or runner_cfg.get("verbose", False)),
+        manifest_dir=manifest_dir,
     )
 
 
 async def run_pool(settings: Dict[str, Any], args: argparse.Namespace) -> None:
     runner_cfg = _build_runner_config(settings, args)
+    manifest_dir = require_manifest_dir(runner_cfg.manifest_dir)
+    runner_cfg.manifest_dir = manifest_dir
+    settings.setdefault("manifest", {})["dir"] = str(manifest_dir)
+    _print_startup_banner(manifest_dir)
 
     if args.tasks:
         tasks_path = Path(args.tasks).resolve()
@@ -364,11 +398,6 @@ async def run_pool(settings: Dict[str, Any], args: argparse.Namespace) -> None:
     if runner_cfg.personas_path and runner_cfg.personas_path.exists():
         personas_map = _load_personas_map(runner_cfg.personas_path)
 
-    manifest_cfg = settings.get("manifest") or {}
-    manifest_cache_dir = None
-    cache_dir_val = manifest_cfg.get("cache_dir")
-    if cache_dir_val:
-        manifest_cache_dir = Path(os.path.expandvars(cache_dir_val)).resolve()
     manifest_cache: Dict[str, Any] = {}
 
     queue: asyncio.Queue = asyncio.Queue()
@@ -386,7 +415,7 @@ async def run_pool(settings: Dict[str, Any], args: argparse.Namespace) -> None:
             website = task.get("website") or task.get("confirmed_website") or ""
             domain = _domain_from_url(str(website)) or ""
             if domain not in manifest_cache:
-                manifest_cache[domain] = load_manifest(domain, cache_dir=manifest_cache_dir) if domain else None
+                manifest_cache[domain] = load_manifest_from_dir(domain, manifest_dir) if domain else None
             allowed, blocked = gate_recommendations(task.get("recommendations", []), manifest_cache.get(domain))
             task = dict(task)
             task["_recommendations_allowed"] = allowed
@@ -427,6 +456,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--concurrency", type=int, help="Override runner concurrency")
     parser.add_argument("--metrics-dir", help="Override metrics directory path")
     parser.add_argument("--personas", help="Path to personas YAML for weighted sampling")
+    parser.add_argument("--manifest-dir", help="Path to directory containing site manifests (.json)")
     parser.add_argument("--verbose", action="store_true", help="Print concise progress events to stdout")
     return parser
 

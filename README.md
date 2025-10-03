@@ -48,13 +48,15 @@ python -m pip install --upgrade pip
 2) Install the package (editable) and browsers (run from repo root)
 ```bash
 python -m pip install -e .
-python -m pip install playwright
-playwright install
+ python -m pip install playwright
+ playwright install
 ```
 
 3) Set API keys (choose your provider)
 ```bash
 export OPENAI_API_KEY=...    # or: export GEMINI_API_KEY=...
+# Optional: point to a custom manifest directory
+# export SEEACT_MANIFEST_DIR=/path/to/site_manifest
 ```
 
 Change model quickly (OpenAI/fine‑tunes)
@@ -76,6 +78,8 @@ python -m seeact.seeact --profile demo
 ```bash
 python -m seeact.seeact
 ```
+
+If you place manifests somewhere other than the default `site_manifest/`, point the CLI/runner at your directory either by setting `SEEACT_MANIFEST_DIR` or passing `--manifest-dir` to the runner.
 
 Environment tips:
 - Ensure only one environment is active (Conda or venv). If both are active, Python may not see installed deps.
@@ -412,14 +416,17 @@ Build once per calibration window and reuse across experiments:
 
 ### Site Manifests & Prompt Pack v2
 
-- Deterministic scraping populates `site_manifest/<domain>.json` with selectors for search, collection grids, PDP actions, cart/checkout, and overlay close buttons.
-- Generate/update a manifest:
+- Manifests are JSON files stored on disk (default: `site_manifest/` at the repo root). The runner fails fast if the directory is missing or empty.
+- Override the location with `SEEACT_MANIFEST_DIR` or `--manifest-dir` when invoking the runner/CLI. The resolved directory is also surfaced in the startup banner.
+- The repo ships with a tiny example manifest (`site_manifest/example.com.json`) so a fresh environment can run smoke tests without additional setup.
+- Generate or refresh manifests with Playwright scraping:
   ```bash
-  python -m seeact.manifest.scrape example.com --max-pages 3
+  PYTHONPATH=src python src/seeact/manifest/scraper.py example.com --max-pages 3
   ```
-  (outputs `site_manifest/example.com.json`; respects `robots.txt` unless you override Playwright behavior).
-- The agent consults the manifest first for prompts/macros (e.g., product selectors, add-to-cart). If no manifest (or selector) is found, it falls back to generic heuristics.
-- Configure cache settings via `[manifest]` in `config/base.toml` (e.g., `cache_dir`, `refresh_days`).
+  (writes `site_manifest/example.com.json` by default; respects `robots.txt` unless you override Playwright behaviour).
+- The agent consults any matching manifest first (selectors for search, collection grids, PDP actions, cart/checkout, overlays). Absent a match it falls back to generic heuristics.
+- Configure `[manifest].dir` in `config/base.toml` (or profile overlays) to point at a shared manifest directory when deploying.
+- When the runner starts it prints a banner with the resolved manifest directory, package version, and current git commit to make environment drift obvious.
 
 ### Runtime: Local vs Browserbase (CDP)
 

@@ -5,9 +5,9 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 try:  # Lazy import: personas package may be used without seeact installed
-    from seeact.manifest import load_manifest, Manifest  # type: ignore
+    from seeact.utils.manifest_loader import load_manifest, ManifestRecord  # type: ignore
 except Exception:  # pragma: no cover - fallback when seeact isn't installed
-    Manifest = None  # type: ignore
+    ManifestRecord = None  # type: ignore
 
 
 @dataclass
@@ -43,11 +43,13 @@ class SiteTaxonomy:
         }
 
 
-def _safe_manifest(domain: str, cache_dir: Optional[Path]) -> Optional[Manifest]:
+def _safe_manifest(domain: str, cache_dir: Optional[Path]) -> Optional[ManifestRecord]:
     if 'load_manifest' not in globals():  # pragma: no cover - safety when seeact absent
         return None
     try:
-        return load_manifest(domain, cache_dir=cache_dir)
+        if cache_dir is None:
+            return None
+        return load_manifest(domain, cache_dir)
     except Exception:
         return None
 
@@ -113,4 +115,3 @@ def prompt_vocab_from_taxonomy(domain: str, intent: str, cache_dir: Optional[Pat
     if not taxonomy:
         return None
     return taxonomy.to_prompt_vocab(intent)
-

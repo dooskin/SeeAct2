@@ -14,6 +14,8 @@ except ModuleNotFoundError:  # pragma: no cover
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
 PROFILE_DIR = CONFIG_DIR / "profiles"
 DEFAULT_BASE_CONFIG = CONFIG_DIR / "base.toml"
+DEFAULT_MANIFEST_DIR = Path(__file__).resolve().parents[2] / "site_manifest"
+MANIFEST_ENV_VAR = "SEEACT_MANIFEST_DIR"
 
 
 class SettingsLoadError(RuntimeError):
@@ -55,6 +57,7 @@ _PATH_FIELDS: Tuple[Tuple[str, ...], ...] = (
     ("experiment", "task_file_path"),
     ("runner", "metrics_dir"),
     ("manifest", "cache_dir"),
+    ("manifest", "dir"),
 )
 
 
@@ -100,6 +103,15 @@ def load_settings(
 
     config = _expand_env(config)
     config = _resolve_paths(config, base_dir)
+    manifest_cfg = config.setdefault("manifest", {})
+    manifest_dir_value = os.getenv(MANIFEST_ENV_VAR) or manifest_cfg.get("dir") or manifest_cfg.get("cache_dir")
+    if manifest_dir_value:
+        manifest_dir = Path(str(manifest_dir_value)).expanduser()
+        if not manifest_dir.is_absolute():
+            manifest_dir = (base_dir / manifest_dir).resolve()
+    else:
+        manifest_dir = DEFAULT_MANIFEST_DIR
+    manifest_cfg["dir"] = str(manifest_dir)
     config.setdefault("__meta", {})["config_dir"] = str(base_dir)
     config["__meta"]["config_path"] = str(base_path)
     if profiles:

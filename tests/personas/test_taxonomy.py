@@ -14,7 +14,7 @@ _ensure_pkg()
 from personas.taxonomy import prompt_vocab_from_taxonomy
 
 
-def test_site_taxonomy_prompt_vocab_hot_intent(monkeypatch):
+def test_site_taxonomy_prompt_vocab_hot_intent(monkeypatch, tmp_path):
     class DummyManifest:
         domain = "example.com"
         data = {
@@ -26,16 +26,16 @@ def test_site_taxonomy_prompt_vocab_hot_intent(monkeypatch):
             }
         }
 
-    monkeypatch.setattr("personas.taxonomy.load_manifest", lambda domain, cache_dir=None: DummyManifest())
+    monkeypatch.setattr("personas.taxonomy.load_manifest", lambda domain, manifest_dir: DummyManifest())
 
-    vocab = prompt_vocab_from_taxonomy("example.com", "hot")
+    vocab = prompt_vocab_from_taxonomy("example.com", "hot", cache_dir=tmp_path)
     assert vocab
     assert "Add to Cart button" in vocab["ctas"]
     assert "Variant selector" in vocab["ctas"]
     assert "Product tiles" in vocab["collections"]
 
 
-def test_site_taxonomy_prompt_vocab_cold_intent(monkeypatch):
+def test_site_taxonomy_prompt_vocab_cold_intent(monkeypatch, tmp_path):
     class DummyManifest:
         domain = "demo.com"
         data = {
@@ -45,8 +45,8 @@ def test_site_taxonomy_prompt_vocab_cold_intent(monkeypatch):
             }
         }
 
-    monkeypatch.setattr("personas.taxonomy.load_manifest", lambda domain, cache_dir=None: DummyManifest())
+    monkeypatch.setattr("personas.taxonomy.load_manifest", lambda domain, manifest_dir: DummyManifest())
 
-    vocab = prompt_vocab_from_taxonomy("demo.com", "cold")
+    vocab = prompt_vocab_from_taxonomy("demo.com", "cold", cache_dir=tmp_path)
     assert vocab
     assert vocab["collections"][0] == "Search bar"
