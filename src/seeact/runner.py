@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import copy
 import json
+import logging
 import os
 import random
 import time
@@ -17,10 +18,28 @@ from urllib.parse import urlparse
 
 import yaml
 
+from seeact.Exceptions import TaskExecutionRetryError
 from seeact.execution import execute_task
 from seeact.recommendations.gating import gate_recommendations
 from seeact.settings import load_settings, SettingsLoadError
 from seeact.utils.manifest_loader import load_manifest as load_manifest_from_dir, require_manifest_dir
+
+logger = logging.getLogger(__name__)  # runner module logger
+logger.setLevel(logging.DEBUG)
+#  Add a file handler for the runner logger
+f_handler = logging.FileHandler('runner.log')
+f_handler.setLevel(logging.DEBUG)
+f_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+f_handler.setFormatter(f_format)
+logger.addHandler(f_handler)
+
+# Add a console handler for the runner logger
+c_handler = logging.StreamHandler()
+c_handler.setLevel(logging.INFO)
+# Include logger name in the console output
+c_format = logging.Formatter('runner.py: %(asctime)s - %(name)s - %(levelname)s - %(message)s')
+c_handler.setFormatter(c_format)
+logger.addHandler(c_handler)
 
 
 @dataclass
@@ -121,6 +140,7 @@ def _load_personas_map(personas_path: Path) -> Dict[str, List[Dict[str, Any]]]:
                 continue
             site_map.setdefault(site_key, []).append({"id": pid, "weight": weight, "data": pdata})
         except Exception:
+            logger.warning(f"Invalid persona entry for id={pid} in {personas_path}", exc_info=True)
             continue
     return site_map
 
@@ -209,7 +229,7 @@ async def _run_single_task(
     runtime_cfg = task_config.setdefault("runtime", {})
     if shared_session and shared_session.get("cdp_url"):
         runtime_cfg["cdp_url"] = shared_session["cdp_url"]
-    agent = SeeActAgent(config=task_config)
+    agent = SeeActAgent(config=task_config, worker_id=worker_id)
     payload = dict(task)
     payload.update({"task_id": task_id, "website": website, "confirmed_task": confirmed_task})
 
@@ -247,7 +267,7 @@ async def _run_single_task(
                 "ts": time.time(),
             }
         )
-        raise
+        raise TaskExecutionRetryError(task_id, str(exc)) from exc
 
 
 async def _worker_loop(
@@ -294,28 +314,30 @@ async def _worker_loop(
             }
             close_session_fn = bb_close
         except Exception as exc:  # pragma: no cover - relies on Browserbase
-            session_error = exc
+            #session_error = exc
+            logger.error("Failed to create Browserbase session", exc_info=True)
+            raise exc
 
     while True:
         task = await queue.get()
         if task is None:
             queue.task_done()
             break
-        if session_error is not None:
-            await sink.write(
-                {
-                    "event": "task_error",
-                    "run_id": run_id,
-                    "worker_id": worker_id,
-                    "task_id": task.get("task_id") or "",
-                    "error": type(session_error).__name__,
-                    "message": str(session_error),
-                    "persona_id": task.get("_persona_id"),
-                    "ts": time.time(),
-                }
-            )
-            queue.task_done()
-            continue
+        #if session_error is not None:
+        #    await sink.write(
+        #        {
+        #            "event": "task_error",
+        #            "run_id": run_id,
+        #            "worker_id": worker_id,
+        #            "task_id": task.get("task_id") or "",
+        #            "error": type(session_error).__name__,
+        #            "message": str(session_error),
+        #            "persona_id": task.get("_persona_id"),
+        #            "ts": time.time(),
+        #        }
+        #    )
+        #    queue.task_done()
+        #    continue
         attempt = 0
         while attempt <= runner_cfg.max_retries:
             try:
@@ -324,29 +346,63 @@ async def _worker_loop(
                     timeout=runner_cfg.task_timeout_sec,
                 )
                 break
-            except Exception:
-                attempt += 1
-                if attempt > runner_cfg.max_retries:
+            
+            except Exception as e:
+                if isinstance(e, TaskExecutionRetryError):
+                    attempt += 1
+                    if attempt > runner_cfg.max_retries:
+                        break
+                    delay = min(runner_cfg.backoff_base_sec * (2 ** (attempt - 1)), runner_cfg.backoff_max_sec)
+                    await sink.write(
+                        {
+                            "event": "task_retry",
+                            "run_id": run_id,
+                            "worker_id": worker_id,
+                            "task_id": task.get("task_id"),
+                            "attempt": attempt,
+                            "delay_sec": delay,
+                            "persona_id": task.get("_persona_id"),
+                            "ts": time.time(),
+                        }
+                    )
+                    logger.info(f"Retrying task {task.get('task_id')} in {delay:.1f}s (attempt {attempt})")
+                    await asyncio.sleep(delay)
+                elif isinstance(e, asyncio.TimeoutError):
+                    await sink.write(
+                        {
+                            "event": "task_timeout",
+                            "run_id": run_id,
+                            "worker_id": worker_id,
+                            "task_id": task.get("task_id"),
+                            "persona_id": task.get("_persona_id"),
+                            "ts": time.time(),
+                        }
+                    )
+                    logger.warning(f"Task {task.get('task_id')} timed out after {runner_cfg.task_timeout_sec}s. Abandoning task.")
+                    queue.task_done() # I think abandoning the task here needs to mark it done
                     break
-                delay = min(runner_cfg.backoff_base_sec * (2 ** (attempt - 1)), runner_cfg.backoff_max_sec)
-                await sink.write(
-                    {
-                        "event": "task_retry",
-                        "run_id": run_id,
-                        "worker_id": worker_id,
-                        "task_id": task.get("task_id"),
-                        "attempt": attempt,
-                        "delay_sec": delay,
-                        "persona_id": task.get("_persona_id"),
-                        "ts": time.time(),
-                    }
-                )
-                await asyncio.sleep(delay)
+                else:
+                    await sink.write(
+                        {
+                            "event": "task_error",
+                            "run_id": run_id,
+                            "worker_id": worker_id,
+                            "task_id": task.get("task_id"),
+                            "error": type(e).__name__,
+                            "message": str(e),
+                            "persona_id": task.get("_persona_id"),
+                            "ts": time.time(),
+                        }
+                    )
+                    queue.task_done()
+                    logger.error(f"Task {task.get('task_id')} failed for other reasons: {e}", exc_info=True)
+                    raise e
         queue.task_done()
     if session_info and close_session_fn and session_info.get("session_id") and session_info.get("api_key"):
         try:
             close_session_fn(session_info["session_id"], session_info["api_key"], api_base=session_info.get("api_base"))
         except Exception:
+            logger.warning("Failed to close Browserbase session", exc_info=True)
             pass
 
 
@@ -397,6 +453,12 @@ async def run_pool(settings: Dict[str, Any], args: argparse.Namespace) -> None:
     personas_map = None
     if runner_cfg.personas_path and runner_cfg.personas_path.exists():
         personas_map = _load_personas_map(runner_cfg.personas_path)
+    else:
+        if runner_cfg.personas_path:
+            logger.warning(f"Personas file {runner_cfg.personas_path} not found, terminating.")
+            raise FileNotFoundError(f"Personas file {runner_cfg.personas_path} not found.")
+        else:
+            logger.info("No personas file configured, proceeding without personas.")
 
     manifest_cache: Dict[str, Any] = {}
 
@@ -462,12 +524,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    logger.info("Starting SeeAct runner")
     parser = build_arg_parser()
     args = parser.parse_args(argv)
     try:
         settings, _ = load_settings(
             config_path=Path(args.config).resolve() if args.config else None,
             profiles=args.profile or [],
+            logger=logger
         )
     except SettingsLoadError as exc:
         parser.error(str(exc))

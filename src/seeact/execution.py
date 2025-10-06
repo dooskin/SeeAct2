@@ -4,6 +4,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from seeact.Exceptions import TaskExecutionRetryError
+
 
 @dataclass
 class TaskResult:
@@ -29,7 +31,7 @@ async def execute_task(agent, task: Dict[str, Any], max_steps: int) -> TaskResul
     while not agent.complete_flag and steps < max_steps:
         prediction = await agent.predict()
         if not prediction:
-            break
+            raise TaskExecutionRetryError(task_id, "Agent failed to predict next action.", context=__name__) # possibly retry task
         await agent.perform_action(
             target_element=prediction.get("element"),
             action_name=prediction.get("action"),

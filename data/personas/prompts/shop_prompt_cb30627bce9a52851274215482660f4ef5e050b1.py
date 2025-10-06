@@ -12,7 +12,7 @@ profile: returning desktop user on Windows, male, 35-44, from US:NY, source=dire
 metrics: cr≈4.2%  bounce≈37.5%  dwell≈45s  backtrack≈5.8%  form_err≈3.3%
 
 # GOAL
-Navigate test.com and add one plausible product to cart. Do not pay. Return price/variant/subtotal.
+Navigate hijabkart.in and add one plausible product to cart. Do not pay. Return price/variant/subtotal.
 
 # ACTIONS  (only these verbs)
 OPEN(url) | CLICK(text|selector) | TYPE(selector, text) | ENTER | SCROLL(dir|amount) | FILTER(name=value) | ADD_TO_CART | VIEW_CART

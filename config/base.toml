@@ -27,6 +27,7 @@ grounding_strategy = "text_choice_som"
 max_auto_op = 50
 max_continuous_no_op = 5
 highlight = false
+heuristic = false
 
 [openai]
 rate_limit = -1
