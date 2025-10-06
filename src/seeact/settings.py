@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, Sequence, Tuple
@@ -85,20 +86,24 @@ def _resolve_paths(config: Dict[str, Any], base_dir: Path) -> Dict[str, Any]:
 def load_settings(
     config_path: Path | None = None,
     profiles: Sequence[str] | None = None,
+    logger=logging.getLogger(__name__),
 ) -> Tuple[Dict[str, Any], Path]:
     """Load configuration as a merged dictionary and return with its base directory."""
 
     if config_path is not None:
+        logger.info(f"Loading config from {config_path}")
         base_path = Path(config_path).resolve()
         base_dir = base_path.parent
         config = _load_toml(base_path)
     else:
+        logger.info(f"No config path provided, using default {DEFAULT_BASE_CONFIG}")
         base_path = DEFAULT_BASE_CONFIG
         base_dir = base_path.parent
         config = _load_toml(base_path)
 
     for profile in profiles or []:
         profile_path = PROFILE_DIR / f"{profile}.toml"
+        logger.info(f"Applying profile {profile} from {profile_path}, config merging...")
         config = _merge_dicts(config, _load_toml(profile_path))
 
     config = _expand_env(config)
