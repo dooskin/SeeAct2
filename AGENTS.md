@@ -6,7 +6,7 @@
 - `src/{demo_utils,data_utils,offline_experiments}/`: Runtime helpers and experiment scripts.
 - `src/seeact/*`: Installable Python package (src/ layout). `pyproject.toml` defines packaging metadata.
 - `data/`: Sample tasks and example artifacts (large files should not be committed).
-- `site_manifest/`: JSON manifests of domain-specific selectors for prompts/macros.
+- `site_manifest/`: JSON manifests of domain-specific selectors for prompts/macros (default location; override via `SEEACT_MANIFEST_DIR` when running the CLI/runner).
 - `README.md`, `LICENSE`, `CODE_OF_CONDUCT.md`: Docs and policies.
 
 ## Build, Test, and Development Commands
@@ -55,7 +55,8 @@
 - Collection URLs (e.g., `/collections/`, `/category/`) explicitly skip inline quick-add forms, so the agent opens the PDP before firing Add to Cart—avoiding variant/size prompts from list views without hardcoding site logic.
 - Macro selectors/weights can be tuned via TOML `[macros]` (and optional per-site overrides in the future) without code changes.
 - A small LLM timeout + macro fallback keeps progress moving even if a model call stalls.
-- If a site manifest is available (`site_manifest/<domain>.json`), macros consult its selectors first (search, PDP, cart); otherwise they fall back to generic heuristics.
+- The runner reads manifests directly from disk. Ensure the directory exists and contains `.json` files before launching runs; the startup banner reports the resolved path, package version, and git commit for easy verification.
+- If a site manifest is available (`site_manifest/<domain>.json` or equivalent in your configured directory), macros consult its selectors first (search, PDP, cart); otherwise they fall back to generic heuristics.
 - Persona prompts automatically incorporate manifest taxonomy: hot personas lean on CTAs/variants, warm personas highlight filters/sort controls, and cold personas mention search/collection scaffolding. Disable via `--no-manifest-taxonomy` when calling `personas.cli generate-prompts`.
 - Use `python -m seeact.calibrate` with GA targets + metrics JSONL to align persona buy-propensity/dwell with observed conversion curves. Calibrated personas embed a `calibration` stanza (target vs observed, attempts, timestamp).
 - Runner events now carry `recommendations`/`blocked_recommendations` so experiment pipelines can see which suggestions cleared the manifest gate (capability mapping: search input, filters, variant widget, add-to-cart, checkout CTA).

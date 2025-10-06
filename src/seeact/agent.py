@@ -76,7 +76,7 @@ try:
 except Exception:
     bb_resolve = bb_create = bb_close = None  # type: ignore
 
-from .manifest import load_manifest
+from .utils.manifest_loader import load_manifest as load_manifest_from_dir, ManifestRecord
 
 
 class SeeActAgent:
@@ -209,7 +209,7 @@ class SeeActAgent:
         self._bb_api_key = None
         self.tasks = [self.config["basic"]["default_task"]]
         self._step_metrics: list[dict[str, float | int | bool]] = []
-        self._manifest = None
+        self._manifest: ManifestRecord | None = None
         self._manifest_selectors: dict[str, Any] = {}
         self._manifest_step_used = False
         self._manifest_config = self.config.get("manifest", {}) or {}
@@ -991,10 +991,10 @@ To be successful, it is important to follow the following rules:
             return
         domain = self._extract_domain(url)
         manifest_cfg = self._manifest_config or {}
-        cache_dir_value = manifest_cfg.get("cache_dir")
-        cache_dir_path = None
-        if cache_dir_value:
-            cache_dir_path = Path(os.path.expandvars(cache_dir_value)).resolve()
+        manifest_dir_value = manifest_cfg.get("dir") or manifest_cfg.get("cache_dir")
+        manifest_dir_path = None
+        if manifest_dir_value:
+            manifest_dir_path = Path(os.path.expandvars(str(manifest_dir_value))).resolve()
         candidates = []
         if domain:
             candidates.append(domain)
@@ -1002,12 +1002,14 @@ To be successful, it is important to follow the following rules:
             if len(parts) > 2:
                 candidates.append(".".join(parts[-2:]))
         for cand in candidates:
-            manifest = load_manifest(cand, cache_dir=cache_dir_path)
+            if manifest_dir_path is None:
+                continue
+            manifest = load_manifest_from_dir(cand, manifest_dir_path)
             if manifest:
                 self._manifest = manifest
-                selectors = manifest.data.get("selectors", {}) or {}
+                selectors = manifest.selectors
                 self._manifest_selectors = selectors
-                overlay_selector = (selectors.get("overlays") or {}).get("close_button")
+                overlay_selector = (selectors.get("overlays") or {}).get("close_button") if isinstance(selectors, dict) else None
                 if overlay_selector:
                     register_overlay_hint(cand, overlay_selector)
                 break

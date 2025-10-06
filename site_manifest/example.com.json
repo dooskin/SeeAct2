@@ -1,0 +1,22 @@
+{
+  "domain": "example.com",
+  "scraped_at": "2024-10-01T00:00:00Z",
+  "selectors": {
+    "search": {
+      "input": "input[type='search']"
+    },
+    "collections": {
+      "product_link": "a[href*='/products']"
+    },
+    "pdp": {
+      "add_to_cart": "button:has-text('Add to cart')",
+      "variant_widget": "[data-variant-option]"
+    },
+    "cart": {
+      "checkout": "a[href*='/checkout']"
+    },
+    "overlays": {
+      "close_button": "button[aria-label='Close']"
+    }
+  }
+}

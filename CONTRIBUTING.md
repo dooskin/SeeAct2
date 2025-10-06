@@ -96,6 +96,7 @@ Artifacts live under `PERSONAS_DATA_DIR` (default `data/personas`).
 
 - Runner accepts a personas YAML (`personas: {persona_id: {weight: 1.0}, ...}`) via `--personas` and tags each task with `persona_id`.
 - Concurrency caveat: effective concurrency is capped by the number of tasks enqueued; ensure your tasks file has ≥N tasks to utilize `--concurrency N`.
+- Manifests are loaded from disk. Keep `site_manifest/` committed for smoke tests, or set `SEEACT_MANIFEST_DIR`/`--manifest-dir` when working with alternate locations; the runner will fail fast if the directory is missing or empty.
 
 ## Contribution Workflow
 
@@ -105,7 +106,7 @@ Artifacts live under `PERSONAS_DATA_DIR` (default `data/personas`).
 4) For new endpoints, add tests under `tests/api/` and update README sections.
 5) Keep personas decoupled: the runner should only consume persona_ids and log them; do not import personas logic into the runner.
 6) Update docs: reflect behavior changes in README and this file.
-7) If you change site flows/selectors, refresh the manifest (`python -m seeact.manifest.scrape <domain>`) and commit the updated JSON under `site_manifest/`.
+7) If you change site flows/selectors, refresh the manifest (`PYTHONPATH=src python src/seeact/manifest/scraper.py <domain>`) and commit the updated JSON under `site_manifest/`.
 
 ## Pull Request Checklist
 

@@ -92,7 +92,7 @@ def test_manifest_prompt_hint(monkeypatch, tmp_path, selector_key, expected):
     (manifest_dir / "example.com.json").write_text(json.dumps(data), encoding="utf-8")
 
     config = _base_agent_config(tmp_path, input_info=["screenshot"])
-    config["manifest"] = {"cache_dir": str(manifest_dir)}
+    config["manifest"] = {"dir": str(manifest_dir)}
     agent = agent_module.SeeActAgent(config=config)
     agent._load_manifest_for_url("https://www.example.com/products/item")
     hint = agent._manifest_prompt_hint()
