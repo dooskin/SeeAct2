@@ -146,26 +146,26 @@ def _load_personas_map(personas_path: Path) -> Dict[str, List[Dict[str, Any]]]:
 
 
 def _site_key_from_url(url: str) -> str:
-    try:
-        parsed = urlparse(url if url.startswith("http") else ("https://" + url))
-        host = (parsed.hostname or "").lower()
-        if host.startswith("www."):
-            host = host[4:]
-        return host.split(".")[0]
-    except Exception:
-        return ""
+    
+    parsed = urlparse(url if url.startswith("http") else ("https://" + url))
+    host = (parsed.hostname or "").lower()
+    if not host:
+        logger.warning(f"Cannot determine site key from URL: {url}")
+        return "unknown"
+    if host.startswith("www."):
+        host = host[4:]
+    return host.split(".")[0]
 
 
 def _domain_from_url(url: str) -> Optional[str]:
-    try:
-        parsed = urlparse(url if url.startswith("http") else ("https://" + url))
-        host = (parsed.hostname or "").lower()
-        if host and host.startswith("www."):
-            host = host[4:]
-        return host
-    except Exception:
-        return None
-
+    parsed = urlparse(url if url.startswith("http") else ("https://" + url))
+    host = (parsed.hostname or "").lower()
+    if not host:
+        logger.warning(f"Cannot determine domain from URL: {url}")
+        return "unknown"
+    if host.startswith("www."):
+        host = host[4:]
+    return host
 
 def _pick_persona(task: Dict[str, Any], personas_map: Optional[Dict[str, List[Dict[str, Any]]]]) -> Optional[Dict[str, Any]]:
     if not personas_map:
@@ -401,9 +401,9 @@ async def _worker_loop(
     if session_info and close_session_fn and session_info.get("session_id") and session_info.get("api_key"):
         try:
             close_session_fn(session_info["session_id"], session_info["api_key"], api_base=session_info.get("api_base"))
-        except Exception:
+        except Exception as e:
             logger.warning("Failed to close Browserbase session", exc_info=True)
-            pass
+            raise e
 
 
 def _build_runner_config(settings: Dict[str, Any], args: argparse.Namespace) -> RunnerConfig:
