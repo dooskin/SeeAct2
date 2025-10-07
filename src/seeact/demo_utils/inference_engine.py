@@ -12,6 +12,24 @@ import requests
 from dotenv import load_dotenv
 import litellm
 import base64
+import logging
+
+logger = logging.getLogger(__name__)  # runner module logger
+logger.setLevel(logging.DEBUG)
+#  Add a file handler for the runner logger
+f_handler = logging.FileHandler('inference_engine.log')
+f_handler.setLevel(logging.DEBUG)
+f_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+f_handler.setFormatter(f_format)
+logger.addHandler(f_handler)
+
+# Add a console handler for the runner logger
+c_handler = logging.StreamHandler()
+c_handler.setLevel(logging.INFO)
+# Include logger name in the console output
+c_format = logging.Formatter('inference_engine.py: %(asctime)s - %(name)s - %(levelname)s - %(message)s')
+c_handler.setFormatter(c_format)
+logger.addHandler(c_handler)
 
 
 def load_openai_api_key():
@@ -221,7 +239,7 @@ class OpenAIEngine(Engine):
 
     @backoff.on_exception(
         backoff.expo,
-        (APIError, RateLimitError, APIConnectionError),
+        (APIError, RateLimitError, APIConnectionError), logger=logger
     )
     def generate(self, prompt: list = None, max_new_tokens=4096, temperature=None, model=None, image_path=None,
                  ouput_0=None, turn_number=0, image_detail: str = "auto", **kwargs):
