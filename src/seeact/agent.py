@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import random
+import sys
 import traceback
 from datetime import datetime
 from os.path import dirname
@@ -750,11 +751,11 @@ To be successful, it is important to follow the following rules:
         if not logger.handlers:  # Avoid adding handlers multiple times
             # Create a file handler for writing logs to a file
             log_filename = f'agent_worker_{self.worker_id}.log'
-            f_handler = logging.FileHandler(os.path.join(self.main_path, log_filename), mode='a')
+            f_handler = logging.FileHandler(os.path.join(self.main_path, log_filename), mode='a', encoding='utf-8')
             f_handler.setLevel(logging.INFO)
 
             # Create a console handler for printing logs to the terminal
-            c_handler = logging.StreamHandler()
+            c_handler = logging.StreamHandler(sys.stdout)
             c_handler.setLevel(logging.INFO)
 
             # Create formatters for file and console handlers
@@ -1154,14 +1155,14 @@ To be successful, it is important to follow the following rules:
 
 
         page = self.page
-
+        element_str = repr(element_repr) if element_repr else "N/A"
         if action_name == "CLICK" and selector:
             if selector == "pixel_coordinates":
                 delay = random.randint(50, 150)
                 await self.page.mouse.click(round(target_coordinates["x"]), round(target_coordinates["y"]), delay=delay)
             else:
                 await selector.click(timeout=2000)
-                self.logger.info(f"Clicked on element: {element_repr}")
+                self.logger.info(f"Clicked on element: {element_str}")
         elif action_name == "HOVER" and selector:
 
             if selector == "pixel_coordinates":
@@ -1169,9 +1170,7 @@ To be successful, it is important to follow the following rules:
                 await self.page.mouse.hover(round(target_coordinates["x"]), round(target_coordinates["y"]), delay=delay)
             else:
                 await selector.hover(timeout=2000)
-                self.logger.info(f"Hovered over element: {element_repr}")
-
-
+                self.logger.info(f"Hovered over element: {element_str}")
 
         elif action_name == "TYPE" and selector:
 
@@ -1185,7 +1184,7 @@ To be successful, it is important to follow the following rules:
                 await self.page.keyboard.type(value)
             else:
                 await selector.fill(value)
-                self.logger.info(f"Typed '{value}' into element: {element_repr}")
+                self.logger.info(f"Typed '{value}' into element: {element_str}")
 
         elif action_name == "SCROLL UP":
             await page.evaluate(f"window.scrollBy(0, -{self.config['browser']['viewport']['height'] // 2});")
@@ -1236,13 +1235,13 @@ To be successful, it is important to follow the following rules:
                 delay = random.randint(50, 150)
                 await self.page.mouse.click(round(target_coordinates["x"]), round(target_coordinates["y"]), delay=delay)
             await selector.press('Enter')
-            self.logger.info(f"Pressed Enter on element: {element_repr}")
+            self.logger.info(f"Pressed Enter on element: {element_str}")
         elif action_name == "PRESS ENTER":
             await page.keyboard.press('Enter')
-            self.logger.info(f"Pressed Enter on element: {element_repr}")
+            self.logger.info(f"Pressed Enter on element: {element_str}")
         elif action_name == "SELECT" and selector:
             await select_option(selector, value)
-            self.logger.info(f"Selected option '{value}' from element: {element_repr}")
+            self.logger.info(f"Selected option '{value}' from element: {element_str}")
         elif action_name == "TERMINATE":
             self.complete_flag = True
             self.logger.info("Task has been marked as complete. Terminating...")

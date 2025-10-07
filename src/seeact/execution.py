@@ -45,7 +45,7 @@ async def execute_task(agent, task: Dict[str, Any], max_steps: int) -> TaskResul
             )
         except playwright.async_api.TimeoutError as e:
             raise TaskExecutionRetryError(task_id, 
-                                          "Action timed out: " + str(prediction.get("action"))  + " at element " + prediction.get("element"), 
+                                          "Action timed out: " + str(prediction.get("action"))  + " at element " + str(prediction.get("element")), 
                                           context=__name__) from e
         steps += 1
 
