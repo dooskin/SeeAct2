@@ -233,42 +233,43 @@ async def _run_single_task(
     payload = dict(task)
     payload.update({"task_id": task_id, "website": website, "confirmed_task": confirmed_task})
 
-    try:
-        result = await execute_task(agent, payload, max_steps=max_steps)
-        metrics_summary = _summarize_step_metrics(result.step_metrics)
-        await sink.write(
-            {
-                "event": "task_complete",
-                "run_id": run_id,
-                "worker_id": worker_id,
-                "task_id": task_id,
-                "duration_ms": result.duration_ms,
-                "steps": result.steps,
-                "success": result.success,
-                "result": result.result_payload,
-                "persona_id": task.get("_persona_id"),
-                "step_metrics": metrics_summary,
-                "recommendations": task.get("_recommendations_allowed"),
-                "blocked_recommendations": task.get("_recommendations_blocked"),
-                "ts": time.time(),
-            }
-        )
-    except Exception as exc:
-        await sink.write(
-            {
-                "event": "task_error",
-                "run_id": run_id,
-                "worker_id": worker_id,
-                "task_id": task_id,
-                "error": type(exc).__name__,
-                "message": str(exc),
-                "persona_id": task.get("_persona_id"),
-                "blocked_recommendations": task.get("_recommendations_blocked"),
-                "ts": time.time(),
-            }
-        )
-        raise TaskExecutionRetryError(task_id, str(exc)) from exc
-
+    #try:
+    result = await execute_task(agent, payload, max_steps=max_steps)
+    metrics_summary = _summarize_step_metrics(result.step_metrics)
+    await sink.write(
+        {
+            "event": "task_complete",
+            "run_id": run_id,
+            "worker_id": worker_id,
+            "task_id": task_id,
+            "duration_ms": result.duration_ms,
+            "steps": result.steps,
+            "success": result.success,
+            "result": result.result_payload,
+            "persona_id": task.get("_persona_id"),
+            "step_metrics": metrics_summary,
+            "recommendations": task.get("_recommendations_allowed"),
+            "blocked_recommendations": task.get("_recommendations_blocked"),
+            "ts": time.time(),
+        }
+    )
+    #except Exception as exc:
+    #    await sink.write(
+    #        {
+    #            "event": "task_error",
+    #            "run_id": run_id,
+    #            "worker_id": worker_id,
+    #            "task_id": task_id,
+    #            "error": type(exc).__name__,
+    #            "message": str(exc),
+    #            "persona_id": task.get("_persona_id"),
+    #            "blocked_recommendations": task.get("_recommendations_blocked"),
+    #            "ts": time.time(),
+    #        }
+    #    )
+    #    #raise TaskExecutionRetryError(task_id, str(exc)) from exc
+    #    logger.error(f"Task {task_id} failed with exception: {exc}", exc_info=True)
+    #    raise exc
 
 async def _worker_loop(
     worker_id: int,
@@ -323,21 +324,6 @@ async def _worker_loop(
         if task is None:
             queue.task_done()
             break
-        #if session_error is not None:
-        #    await sink.write(
-        #        {
-        #            "event": "task_error",
-        #            "run_id": run_id,
-        #            "worker_id": worker_id,
-        #            "task_id": task.get("task_id") or "",
-        #            "error": type(session_error).__name__,
-        #            "message": str(session_error),
-        #            "persona_id": task.get("_persona_id"),
-        #            "ts": time.time(),
-        #        }
-        #    )
-        #    queue.task_done()
-        #    continue
         attempt = 0
         while attempt <= runner_cfg.max_retries:
             try:
@@ -366,6 +352,7 @@ async def _worker_loop(
                         }
                     )
                     logger.info(f"Retrying task {task.get('task_id')} in {delay:.1f}s (attempt {attempt})")
+                    logger.debug(f"Retryable error details: {e}", exc_info=True)
                     await asyncio.sleep(delay)
                 elif isinstance(e, asyncio.TimeoutError):
                     await sink.write(
@@ -391,6 +378,7 @@ async def _worker_loop(
                             "error": type(e).__name__,
                             "message": str(e),
                             "persona_id": task.get("_persona_id"),
+                            "blocked_recommendations": task.get("_recommendations_blocked"),
                             "ts": time.time(),
                         }
                     )

@@ -36,6 +36,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
+import playwright
+
+from seeact.Exceptions import TaskExecutionRetryError
+
 try:
     import toml  # type: ignore
 except Exception:
@@ -906,6 +910,7 @@ To be successful, it is important to follow the following rules:
             try:
                 self.session_control['browser'] = await self.playwright.chromium.connect_over_cdp(cdp_url, headers=headers_out)
             except Exception:
+                self.logger.warning("CDP connection with dict headers failed... retrying with array format")
                 # Fallback to array of {name,value}
                 headers_array = None
                 if isinstance(headers, dict):
@@ -914,7 +919,7 @@ To be successful, it is important to follow the following rules:
                     headers_array = headers or None
                 self.session_control['browser'] = await self.playwright.chromium.connect_over_cdp(cdp_url, headers=headers_array)
             # Record call for test stubs that expect chromium.calls
-            #try:
+            #try:            
             if not hasattr(self.playwright.chromium, "calls"):
                 setattr(self.playwright.chromium, "calls", [])
             hdr = headers_out if headers_out is not None else (headers_array if 'headers_array' in locals() else {})
@@ -942,21 +947,21 @@ To be successful, it is important to follow the following rules:
             self.session_control['context'] = await normal_new_context_async(self.session_control['browser'],
                                                                              viewport=self.config['browser']['viewport'])
 
+        assert self.session_control['context'] is not None
+        assert self.session_control['browser'] is not None
+        
         self.session_control['context'].on("page", self.page_on_open_handler)
         p = await self.session_control['context'].new_page()
         # Ensure viewport emulation is set when connecting over CDP (may default to None)
-        try:
-            if not p.viewport_size:
-                await p.set_viewport_size(self.config['browser']['viewport'])
-        except Exception:
-            pass
+        #try:
+        if not p.viewport_size:
+            await p.set_viewport_size(self.config['browser']['viewport'])
+        #except Exception:
+        #    pass
 
         # Optional crawler_mode: start tracing only when explicitly enabled
-        try:
-            if bool((self.config.get("basic") or {}).get("crawler_mode", False)):
-                await self.session_control['context'].tracing.start(screenshots=True, snapshots=True)
-        except Exception:
-            pass
+        if bool((self.config.get("basic") or {}).get("crawler_mode", False)):
+            await self.session_control['context'].tracing.start(screenshots=True, snapshots=True)
 
         target_url = self.config['basic']['default_website'] if website is None else website
         try:
@@ -1201,6 +1206,7 @@ To be successful, it is important to follow the following rules:
             self.logger.info("Pressed PageDown key")
         elif action_name == "NEW TAB":
             new_page = await self.session_control['context'].new_page()
+            self.session_control['active_page'] = new_page  # TODO: why was this not here originally?
             # self.session_control['pages'].append(new_page)
             self.logger.info("Opened a new tab")
         elif action_name == "CLOSE TAB":
@@ -1339,17 +1345,17 @@ To be successful, it is important to follow the following rules:
             await self.start_playwright_tracing()
             return prediction
 
-        try:
-            if self.config["agent"]["grounding_strategy"] == "text_choice_som":
-                with open(os.path.join(dirname(__file__), "mark_page.js")) as f:
-                    mark_page_script = f.read()
-                await self.page.evaluate(mark_page_script)
-                await self.page.evaluate("unmarkPage()")
-                await self.page.evaluate("""elements => {
-                    return window.som.drawBoxes(elements);
-                    }""", elements)
-        except Exception as e:
-            self.logger.info(f"Mark page script error {e}")
+        #try:
+        if self.config["agent"]["grounding_strategy"] == "text_choice_som":
+            with open(os.path.join(dirname(__file__), "mark_page.js")) as f:
+                mark_page_script = f.read()
+            await self.page.evaluate(mark_page_script)
+            await self.page.evaluate("unmarkPage()")
+            await self.page.evaluate("""elements => {
+                return window.som.drawBoxes(elements);
+                }""", elements)
+        #except Exception as e:
+        #    self.logger.info(f"Mark page script error {e}")
 
         # Generate choices for the prompt (batched for parity with demo)
         include_dom = bool((self.config.get("experiment") or {}).get("include_dom_in_choices", False))
@@ -1360,20 +1366,11 @@ To be successful, it is important to follow the following rules:
         if top_k > 0:
             elements = elements[:top_k]
 
-        screenshot_path = None
-        if self._capture_screenshots:
-            screenshot_path = self.screenshot_path
-            try:
-                Path(screenshot_path).parent.mkdir(parents=True, exist_ok=True)
-            except Exception:
-                pass
-            try:
-                await self.page.screenshot(path=screenshot_path)
-            except Exception as e:
-                self.logger.info(f"Failed to take screenshot: {e}")
+        screenshot_path = await self.take_screenshot()
+        #await self.take_screenshot()
 
         terminal_width = 10
-        self.logger.info(f"Step - {self.time_step}\n{'-' * terminal_width}\nAction Generation ➡️")
+        self.logger.info(f"Step - {self.time_step}\n{'-' * terminal_width}\nAction Generation ->")
         self.logger.info("TASK: " + self.tasks[-1])
         self.logger.info("Previous:")
         for action in self.taken_actions:
@@ -1414,7 +1411,9 @@ To be successful, it is important to follow the following rules:
             try:
                 self.logger.info("Trying heuristic macro action before LLM grounding...")
                 macro_pred = await self._macro_next_action()
-                if macro_pred and macro_pred.get("action") not in [None, "", "NONE"]:
+                if macro_pred is None:
+                    pass # macro next action disable
+                elif macro_pred.get("action") not in [None, "", "NONE"]:
                     self.predictions.append(macro_pred)
                     step_metrics_entry["macro_used"] = True
                     step_metrics_entry["manifest_used"] = getattr(self, "_manifest_step_used", False)
@@ -1423,8 +1422,8 @@ To be successful, it is important to follow the following rules:
                 else:
                     self.logger.info("Heuristic macro action did not yield a valid action.")
             except Exception as e:
-                self.logger.info("Heuristic macro action failed", e)
-                pass
+                self.logger.error("Heuristic macro action failed for unknown reasons", e)
+                raise e
             if num_choices == 0:
                 self.logger.warning("No interactive elements found; using fallback macro action, overriding settings.")
                 prediction = await self._macro_next_action(override=True)
@@ -1444,7 +1443,7 @@ To be successful, it is important to follow the following rules:
                 batch = elements[start:end]
                 choices = format_choices(batch, include_dom=include_dom)
                 options = format_options(choices)
-                choice_text = f"Action Grounding ➡️" + "\n" + options
+                choice_text = f"Action Grounding ->" + "\n" + options
                 for line in choice_text.split('\n'):
                     self.logger.info(line)
                 prompt = self.generate_prompt(task=self.tasks[-1], previous=self.taken_actions, choices=choices)
@@ -1457,7 +1456,7 @@ To be successful, it is important to follow the following rules:
                 )
                 llm_ms_total += int((time.time() - t_llm0) * 1000)
                 step_metrics_entry["llm_ms"] = llm_ms_total
-                self.logger.info(f"🤖 Action Grounding Output 🤖")
+                self.logger.info(f"[llm] Action Grounding Output [llm]")
                 if output:
                     for line in output.split('\n'):
                         self.logger.info(line.strip())
@@ -1514,12 +1513,12 @@ To be successful, it is important to follow the following rules:
             self.complete_flag = True
             return
 
-        try:
-            # Clear the marks before action
-            if self.config["agent"]["grounding_strategy"] == "text_choice_som":
-                await self.page.evaluate("unmarkPage()")
-        except Exception as e:
-            pass
+        #try:
+        # Clear the marks before action
+        if self.config["agent"]["grounding_strategy"] == "text_choice_som":
+            await self.page.evaluate("unmarkPage()")
+        #except Exception as e:
+        #    pass
 
         pred_element = prediction_dict["element"]
         pred_action = prediction_dict["action"]
@@ -1556,7 +1555,6 @@ To be successful, it is important to follow the following rules:
             traceback_info = traceback.format_exc()
             error_message = f"Error executing action {pred_action}: {str(e)}"
             print(traceback_info)
-            # exit()
             error_message_with_traceback = f"{error_message}\n\nTraceback:\n{traceback_info}"
 
             self.logger.info(new_action)
@@ -1600,17 +1598,14 @@ To be successful, it is important to follow the following rules:
         saveconfig(self.config, os.path.join(self.main_path, 'config.toml'))
 
         # Close Browserbase session if we created one
-        try:
-            if self._bb_session_id and bb_close is not None and self._bb_api_key:
-                bb_close(self._bb_session_id, self._bb_api_key)  # type: ignore
-        except Exception:
-            pass
+        if self._bb_session_id and bb_close is not None and self._bb_api_key:
+            bb_close(self._bb_session_id, self._bb_api_key)  # type: ignore
+            self.logger.info("Browserbase session closed.")
         # Stop Playwright
-        try:
-            if getattr(self, "playwright", None):
-                await self.playwright.stop()
-        except Exception:
-            pass
+        if getattr(self, "playwright", None):
+            await self.playwright.stop()
+            self.logger.info("Playwright closed.")
+
 
     def clear_action_history(self):
         """
@@ -1652,14 +1647,14 @@ To be successful, it is important to follow the following rules:
         if not self._capture_screenshots:
             return None
         path = self.screenshot_path
-        try:
-            Path(path).parent.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
         try:
             await self.page.screenshot(path=path)
         except Exception as e:
-            self.logger.info(f"Failed to take screenshot: {e}")
+            self.logger.warning(f"Failed to take screenshot: {e}")
+            return None
+        self.logger.debug(f"Screenshot saved to {path}")
+        return path
 
     async def start_playwright_tracing(self):
         await self.session_control['context'].tracing.start_chunk(
