@@ -18,6 +18,7 @@ class CalibrationStep(BaseModel):
 class CalibrationStatus(BaseModel):
     """Represents the status of a calibration process"""
     calibration_id: str
+    user_id: str
     site_id: str
     status: str  # "queued", "running", "complete", "error"
     steps: List[CalibrationStep]

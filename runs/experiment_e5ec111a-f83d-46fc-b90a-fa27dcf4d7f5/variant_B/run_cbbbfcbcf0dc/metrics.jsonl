@@ -1,0 +1,2 @@
+{"event": "run_start", "run_id": "cbbbfcbcf0dc", "concurrency": 1, "num_tasks": 0, "config_path": "/home/nouman/Desktop/Squoosh/SeeAct2/src/seeact/config/runner_browserbase.toml", "profiles": null, "ts": 1759496366.7028718}
+{"event": "run_complete", "run_id": "cbbbfcbcf0dc", "ts": 1759496369.2313097}

@@ -113,6 +113,7 @@ class EnhancedGANeonAdapter:
                     CREATE TABLE IF NOT EXISTS calibration_results (
                         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                         calibration_id TEXT NOT NULL UNIQUE,
+                        user_id TEXT NOT NULL,
                         site_id TEXT NOT NULL,
                         snapshot_id TEXT NOT NULL,
                         status TEXT NOT NULL,
@@ -131,8 +132,16 @@ class EnhancedGANeonAdapter:
                     ON calibration_results (calibration_id)
                 """)
                 cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_calibration_results_user_id 
+                    ON calibration_results (user_id)
+                """)
+                cur.execute("""
                     CREATE INDEX IF NOT EXISTS idx_calibration_results_site_id 
                     ON calibration_results (site_id)
+                """)
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_calibration_results_user_site 
+                    ON calibration_results (user_id, site_id)
                 """)
                 
                 conn.commit()
@@ -392,7 +401,7 @@ class EnhancedGANeonAdapter:
                 
                 return rates
     
-    def save_calibration_results(self, calibration_id: str, site_id: str, snapshot_id: str, 
+    def save_calibration_results(self, calibration_id: str, user_id: str, site_id: str, snapshot_id: str, 
                                 real_distributions: Dict[str, Any], 
                                 synthetic_distributions: Dict[str, Any],
                                 real_funnel_rates: Dict[str, float],
@@ -402,10 +411,11 @@ class EnhancedGANeonAdapter:
             with conn.cursor() as cur:
                 cur.execute("""
                     INSERT INTO calibration_results 
-                    (calibration_id, site_id, snapshot_id, status, real_distributions, 
+                    (calibration_id, user_id, site_id, snapshot_id, status, real_distributions, 
                      synthetic_distributions, real_funnel_rates, synthetic_funnel_rates)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (calibration_id) DO UPDATE SET
+                        user_id = EXCLUDED.user_id,
                         site_id = EXCLUDED.site_id,
                         snapshot_id = EXCLUDED.snapshot_id,
                         status = EXCLUDED.status,
@@ -414,7 +424,7 @@ class EnhancedGANeonAdapter:
                         real_funnel_rates = EXCLUDED.real_funnel_rates,
                         synthetic_funnel_rates = EXCLUDED.synthetic_funnel_rates,
                         updated_at = NOW()
-                """, (calibration_id, site_id, snapshot_id, "complete",
+                """, (calibration_id, user_id, site_id, snapshot_id, "complete",
                       json.dumps(real_distributions), json.dumps(synthetic_distributions),
                       json.dumps(real_funnel_rates), json.dumps(synthetic_funnel_rates)))
                 

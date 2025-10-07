@@ -6,11 +6,14 @@ import os
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Request
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Request, Header, Query
 from fastapi.responses import StreamingResponse
+from typing import List
 
 from ..adapters.ga_neon_adapter import EnhancedGANeonAdapter
+from ..adapters.calibration_db_adapter import CalibrationDBAdapter
 from ..services.calibration_service import CalibrationService
+from ..database.connection import get_database_connection
 from ..models.calibration_models import (
     CalibrationRequest, CalibrationResponse, CalibrationStatus,
     CalibrationFeatures, CalibrationBehaviorMatch, CalibrationEvent
@@ -18,9 +21,23 @@ from ..models.calibration_models import (
 
 router = APIRouter()
 
-# Initialize services
-ga_adapter = EnhancedGANeonAdapter()
-calibration_service = CalibrationService(ga_adapter)
+# Initialize services lazily
+ga_adapter = None
+calibration_service = None
+
+def get_calibration_service():
+    global calibration_service
+    if calibration_service is None:
+        global ga_adapter
+        if ga_adapter is None:
+            ga_adapter = EnhancedGANeonAdapter()
+        
+        # Get database connection string from unified service
+        db_connection = get_database_connection()
+        db_adapter = CalibrationDBAdapter(db_connection.get_connection_string())
+        
+        calibration_service = CalibrationService(ga_adapter, db_adapter)
+    return calibration_service
 
 # Health check endpoint (must be before parameterized routes)
 @router.get("/health")
@@ -28,13 +45,29 @@ async def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "service": "calibrations"}
 
+@router.get("", response_model=List[CalibrationStatus])
+@router.get("/", response_model=List[CalibrationStatus])
+async def list_calibrations(user_id: str = Header(..., alias="X-User-ID"), site_id: str = Query(...)):
+    """List calibrations for a user and site"""
+    try:
+        service = get_calibration_service()
+        calibrations = await service.list_calibrations(user_id, site_id)
+        return calibrations
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
+
+@router.post("", response_model=CalibrationResponse)
 @router.post("/", response_model=CalibrationResponse)
-async def start_calibration(request: CalibrationRequest):
+async def start_calibration(
+    request: CalibrationRequest, 
+    user_id: str = Header(..., alias="X-User-ID")
+):
     """Start a calibration job"""
     try:
-        calibration_id = await calibration_service.start_calibration(
-            request.site_id, request.seed
+        service = get_calibration_service()
+        calibration_id = await service.start_calibration(
+            user_id, request.site_id, request.seed
         )
         return CalibrationResponse(
             calibration_id=calibration_id,
@@ -46,7 +79,8 @@ async def start_calibration(request: CalibrationRequest):
 @router.get("/{calibration_id}", response_model=CalibrationStatus)
 async def get_calibration_status(calibration_id: str):
     """Get calibration status"""
-    status = await calibration_service.get_calibration_status(calibration_id)
+    service = get_calibration_service()
+    status = await service.get_calibration_status(calibration_id)
     if not status:
         raise HTTPException(status_code=404, detail="Calibration not found")
     
@@ -55,7 +89,8 @@ async def get_calibration_status(calibration_id: str):
 @router.get("/{calibration_id}/features", response_model=CalibrationFeatures)
 async def get_calibration_features(calibration_id: str):
     """Get calibration features"""
-    features = calibration_service.get_calibration_features(calibration_id)
+    service = get_calibration_service()
+    features = service.get_calibration_features(calibration_id)
     if not features:
         raise HTTPException(status_code=404, detail="Features not ready")
     
@@ -64,7 +99,8 @@ async def get_calibration_features(calibration_id: str):
 @router.get("/{calibration_id}/behavior-match", response_model=CalibrationBehaviorMatch)
 async def get_calibration_behavior_match(calibration_id: str):
     """Get calibration behavior match"""
-    behavior_match = calibration_service.get_calibration_behavior_match(calibration_id)
+    service = get_calibration_service()
+    behavior_match = service.get_calibration_behavior_match(calibration_id)
     if not behavior_match:
         raise HTTPException(status_code=404, detail="Behavior match not ready")
     
@@ -73,7 +109,8 @@ async def get_calibration_behavior_match(calibration_id: str):
 @router.get("/{calibration_id}/events")
 async def get_calibration_events(calibration_id: str):
     """Get calibration events via SSE"""
-    status = await calibration_service.get_calibration_status(calibration_id)
+    service = get_calibration_service()
+    status = await service.get_calibration_status(calibration_id)
     if not status:
         raise HTTPException(status_code=404, detail="Calibration not found")
     

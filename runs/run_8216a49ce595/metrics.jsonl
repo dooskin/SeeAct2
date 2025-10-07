@@ -1,2 +1,0 @@
-{"event": "run_start", "run_id": "8216a49ce595", "concurrency": 1, "num_tasks": 14, "config_path": "/Users/tylerdooskin/AI_DEV/SeeAct2/config/base.toml", "profiles": ["browserbase"], "ts": 1758586018.145587}
-{"event": "task_start", "run_id": "8216a49ce595", "worker_id": 0, "task_id": "tommyjohn_search_add_tshirt", "website": "https://www.tommyjohn.com", "confirmed_task": "On Tommy John, search for 'second skin crew neck t-shirt', open the product page, select size M, and add to cart.", "persona_id": null, "ts": 1758586019.545797}

@@ -1,0 +1,27 @@
+[
+  {
+    "task_id": "cfb757ce-f4c8-4171-8e91-c56a7d432615_B_0",
+    "website": "https://example.com/b",
+    "confirmed_task": "On the Shopify store (collections/all), add 2 ceramic coffee cups/mugs to the cart and go to the checkout page, then STOP before payment. Steps: 1) From the All collection page, open a coffee cup/mug product. 2) If a variant (size/color) is required, select any available option (prefer 'Default' or 'One Size') to enable Add to Cart. 3) Add two ceramic coffee cups total: either increase quantity to 2 for a single product, or add two separate coffee cup/mug products. 4) After adding to cart, if a cart drawer opens, click 'Checkout' in the drawer; if Checkout is not visible, open the Cart page (cart icon or /cart) and click 'Checkout'. 5) Stop at the checkout page and do not enter any information. Return: product titles, quantities, total price, and checkout URL."
+  },
+  {
+    "task_id": "cfb757ce-f4c8-4171-8e91-c56a7d432615_B_1",
+    "website": "https://example.com/b",
+    "confirmed_task": "On the Shopify store (collections/all), add 2 ceramic coffee cups/mugs to the cart and go to the checkout page, then STOP before payment. Steps: 1) From the All collection page, open a coffee cup/mug product. 2) If a variant (size/color) is required, select any available option (prefer 'Default' or 'One Size') to enable Add to Cart. 3) Add two ceramic coffee cups total: either increase quantity to 2 for a single product, or add two separate coffee cup/mug products. 4) After adding to cart, if a cart drawer opens, click 'Checkout' in the drawer; if Checkout is not visible, open the Cart page (cart icon or /cart) and click 'Checkout'. 5) Stop at the checkout page and do not enter any information. Return: product titles, quantities, total price, and checkout URL."
+  },
+  {
+    "task_id": "cfb757ce-f4c8-4171-8e91-c56a7d432615_B_2",
+    "website": "https://example.com/b",
+    "confirmed_task": "On the Shopify store (collections/all), add 2 ceramic coffee cups/mugs to the cart and go to the checkout page, then STOP before payment. Steps: 1) From the All collection page, open a coffee cup/mug product. 2) If a variant (size/color) is required, select any available option (prefer 'Default' or 'One Size') to enable Add to Cart. 3) Add two ceramic coffee cups total: either increase quantity to 2 for a single product, or add two separate coffee cup/mug products. 4) After adding to cart, if a cart drawer opens, click 'Checkout' in the drawer; if Checkout is not visible, open the Cart page (cart icon or /cart) and click 'Checkout'. 5) Stop at the checkout page and do not enter any information. Return: product titles, quantities, total price, and checkout URL."
+  },
+  {
+    "task_id": "cfb757ce-f4c8-4171-8e91-c56a7d432615_B_3",
+    "website": "https://example.com/b",
+    "confirmed_task": "On the Shopify store (collections/all), add 2 ceramic coffee cups/mugs to the cart and go to the checkout page, then STOP before payment. Steps: 1) From the All collection page, open a coffee cup/mug product. 2) If a variant (size/color) is required, select any available option (prefer 'Default' or 'One Size') to enable Add to Cart. 3) Add two ceramic coffee cups total: either increase quantity to 2 for a single product, or add two separate coffee cup/mug products. 4) After adding to cart, if a cart drawer opens, click 'Checkout' in the drawer; if Checkout is not visible, open the Cart page (cart icon or /cart) and click 'Checkout'. 5) Stop at the checkout page and do not enter any information. Return: product titles, quantities, total price, and checkout URL."
+  },
+  {
+    "task_id": "cfb757ce-f4c8-4171-8e91-c56a7d432615_B_4",
+    "website": "https://example.com/b",
+    "confirmed_task": "On the Shopify store (collections/all), add 2 ceramic coffee cups/mugs to the cart and go to the checkout page, then STOP before payment. Steps: 1) From the All collection page, open a coffee cup/mug product. 2) If a variant (size/color) is required, select any available option (prefer 'Default' or 'One Size') to enable Add to Cart. 3) Add two ceramic coffee cups total: either increase quantity to 2 for a single product, or add two separate coffee cup/mug products. 4) After adding to cart, if a cart drawer opens, click 'Checkout' in the drawer; if Checkout is not visible, open the Cart page (cart icon or /cart) and click 'Checkout'. 5) Stop at the checkout page and do not enter any information. Return: product titles, quantities, total price, and checkout URL."
+  }
+]

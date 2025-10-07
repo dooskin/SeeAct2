@@ -11,24 +11,30 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 import random
 
-from ..adapters.ga_neon_adapter import EnhancedGANeonAdapter, TrafficSnapshot
+from ..adapters.ga_neon_adapter import EnhancedGANeonAdapter
+from ..adapters.calibration_db_adapter import CalibrationDBAdapter
 from ..models.calibration_models import CalibrationStep, CalibrationStatus
 
 
 class CalibrationService:
     """Service for managing calibration processes"""
     
-    def __init__(self, ga_adapter: EnhancedGANeonAdapter):
+    def __init__(self, ga_adapter: EnhancedGANeonAdapter, db_adapter: CalibrationDBAdapter):
         self.ga_adapter = ga_adapter
+        self.db_adapter = db_adapter
         self.active_calibrations: Dict[str, CalibrationStatus] = {}
     
-    async def start_calibration(self, site_id: str, seed: Optional[int] = None) -> str:
+    async def start_calibration(self, user_id: str, site_id: str, seed: Optional[int] = None) -> str:
         """Start a new calibration process"""
         calibration_id = str(uuid.uuid4())
+        
+        # Create calibration in database
+        await self.db_adapter.create_calibration(calibration_id, user_id, site_id, seed)
         
         # Initialize calibration status
         status = CalibrationStatus(
             calibration_id=calibration_id,
+            user_id=user_id,
             site_id=site_id,
             status="queued",
             steps=[
@@ -49,40 +55,50 @@ class CalibrationService:
         self.active_calibrations[calibration_id] = status
         
         # Start background process
-        asyncio.create_task(self._run_calibration_process(calibration_id, site_id, seed))
+        asyncio.create_task(self._run_calibration_process(calibration_id, user_id, site_id, seed))
         
         return calibration_id
     
     async def get_calibration_status(self, calibration_id: str) -> Optional[CalibrationStatus]:
         """Get calibration status"""
-        return self.active_calibrations.get(calibration_id)
+        # First check active calibrations (in-memory)
+        if calibration_id in self.active_calibrations:
+            return self.active_calibrations[calibration_id]
+        
+        # If not in memory, check database
+        return await self.db_adapter.get_calibration_status(calibration_id)
     
-    async def _run_calibration_process(self, calibration_id: str, site_id: str, seed: Optional[int] = None):
+    async def list_calibrations(self, user_id: str, site_id: str) -> List[CalibrationStatus]:
+        """List calibrations for a user and site"""
+        # Get calibrations from database
+        return await self.db_adapter.list_calibrations(user_id, site_id)
+    
+    async def _run_calibration_process(self, calibration_id: str, user_id: str, site_id: str, seed: Optional[int] = None):
         """Run the 7-step calibration process"""
         try:
             status = self.active_calibrations[calibration_id]
             status.status = "running"
             
             # Step 1: Fetch GA snapshot
-            await self._step_1_fetch_ga_snapshot(calibration_id, site_id)
+            await self._step_1_fetch_ga_snapshot(calibration_id, user_id, site_id)
             
             # Step 2: Generate prompts
-            await self._step_2_generate_prompts(calibration_id, site_id, seed)
+            await self._step_2_generate_prompts(calibration_id, user_id, site_id, seed)
             
             # Step 3: Write real traffic distributions
-            await self._step_3_write_real_distributions(calibration_id, site_id)
+            await self._step_3_write_real_distributions(calibration_id, user_id, site_id)
             
             # Step 4: Write synthetic distributions
-            await self._step_4_write_synthetic_distributions(calibration_id, site_id)
+            await self._step_4_write_synthetic_distributions(calibration_id, user_id, site_id)
             
             # Step 5: Write real funnel rates
-            await self._step_5_write_real_funnel_rates(calibration_id, site_id)
+            await self._step_5_write_real_funnel_rates(calibration_id, user_id, site_id)
             
             # Step 6: Write synthetic funnel rates
-            await self._step_6_write_synthetic_funnel_rates(calibration_id, site_id)
+            await self._step_6_write_synthetic_funnel_rates(calibration_id, user_id, site_id)
             
             # Step 7: Complete
-            await self._step_7_complete(calibration_id, site_id)
+            await self._step_7_complete(calibration_id, user_id, site_id)
             
         except Exception as e:
             status = self.active_calibrations.get(calibration_id)
@@ -90,8 +106,13 @@ class CalibrationService:
                 status.status = "error"
                 status.error = str(e)
                 status.finished_at = datetime.now(timezone.utc)
+                
+                # Update database with error status
+                await self.db_adapter.update_calibration_status(
+                    calibration_id, "error", status.finished_at
+                )
     
-    async def _step_1_fetch_ga_snapshot(self, calibration_id: str, site_id: str):
+    async def _step_1_fetch_ga_snapshot(self, calibration_id: str, user_id: str, site_id: str):
         """Step 1: Fetch & snapshot Neon traffic for site_id"""
         status = self.active_calibrations[calibration_id]
         status.steps[0].status = "running"
@@ -109,7 +130,7 @@ class CalibrationService:
         
         status.steps[0].status = "complete"
     
-    async def _step_2_generate_prompts(self, calibration_id: str, site_id: str, seed: Optional[int] = None):
+    async def _step_2_generate_prompts(self, calibration_id: str, user_id: str, site_id: str, seed: Optional[int] = None):
         """Step 2: Generate 1,000 prompts proportional to distributions"""
         status = self.active_calibrations[calibration_id]
         status.steps[1].status = "running"
@@ -145,7 +166,7 @@ class CalibrationService:
         
         status.steps[1].status = "complete"
     
-    async def _step_3_write_real_distributions(self, calibration_id: str, site_id: str):
+    async def _step_3_write_real_distributions(self, calibration_id: str, user_id: str, site_id: str):
         """Step 3: Write real traffic distributions (inner pie)"""
         status = self.active_calibrations[calibration_id]
         status.steps[2].status = "running"
@@ -160,7 +181,7 @@ class CalibrationService:
         
         status.steps[2].status = "complete"
     
-    async def _step_4_write_synthetic_distributions(self, calibration_id: str, site_id: str):
+    async def _step_4_write_synthetic_distributions(self, calibration_id: str, user_id: str, site_id: str):
         """Step 4: Write synthetic distributions (outer pie)"""
         status = self.active_calibrations[calibration_id]
         status.steps[3].status = "running"
@@ -175,7 +196,7 @@ class CalibrationService:
         
         status.steps[3].status = "complete"
     
-    async def _step_5_write_real_funnel_rates(self, calibration_id: str, site_id: str):
+    async def _step_5_write_real_funnel_rates(self, calibration_id: str, user_id: str, site_id: str):
         """Step 5: Write real funnel rates (six Shopify events)"""
         status = self.active_calibrations[calibration_id]
         status.steps[4].status = "running"
@@ -190,7 +211,7 @@ class CalibrationService:
         
         status.steps[4].status = "complete"
     
-    async def _step_6_write_synthetic_funnel_rates(self, calibration_id: str, site_id: str):
+    async def _step_6_write_synthetic_funnel_rates(self, calibration_id: str, user_id: str, site_id: str):
         """Step 6: Write synthetic target funnel rates"""
         status = self.active_calibrations[calibration_id]
         status.steps[5].status = "running"
@@ -205,7 +226,7 @@ class CalibrationService:
         
         status.steps[5].status = "complete"
     
-    async def _step_7_complete(self, calibration_id: str, site_id: str):
+    async def _step_7_complete(self, calibration_id: str, user_id: str, site_id: str):
         """Step 7: Emit SSE waypoints; mark complete"""
         status = self.active_calibrations[calibration_id]
         status.steps[6].status = "running"
@@ -222,7 +243,7 @@ class CalibrationService:
         
         if snapshot_id:
             self.ga_adapter.save_calibration_results(
-                calibration_id, site_id, snapshot_id,
+                calibration_id, user_id, site_id, snapshot_id,
                 real_distributions, synthetic_distributions,
                 real_funnel_rates, synthetic_funnel_rates
             )
@@ -230,6 +251,11 @@ class CalibrationService:
         status.steps[6].status = "complete"
         status.status = "complete"
         status.finished_at = datetime.now(timezone.utc)
+        
+        # Update database with final status
+        await self.db_adapter.update_calibration_status(
+            calibration_id, "complete", status.finished_at
+        )
     
     def get_calibration_features(self, calibration_id: str) -> Optional[Dict[str, Any]]:
         """Get calibration features (distributions)"""
