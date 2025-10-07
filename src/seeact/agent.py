@@ -76,7 +76,7 @@ try:
 except Exception:
     bb_resolve = bb_create = bb_close = None  # type: ignore
 
-from .manifest import load_manifest
+from .utils.manifest_loader import load_manifest as load_manifest_from_dir, ManifestRecord
 
 
 class SeeActAgent:
@@ -111,7 +111,8 @@ class SeeActAgent:
                  },
                  rate_limit=-1,
                  model="gpt-4o",
-                 temperature=0.9
+                 temperature=0.9,
+                 worker_id: Optional[int] = None,
                  ):
 
         try:
@@ -171,6 +172,7 @@ class SeeActAgent:
             agent_cfg.setdefault("max_auto_op", agent_cfg.get("max_auto_op", max_auto_op))
             agent_cfg.setdefault("max_continuous_no_op", agent_cfg.get("max_continuous_no_op", max_continuous_no_op))
             agent_cfg.setdefault("highlight", agent_cfg.get("highlight", highlight))
+            agent_cfg.setdefault("heuristic", agent_cfg.get("heuristic", True))
             self._capture_screenshots = "screenshot" in (agent_cfg.get("input_info") or [])
 
             # Map Playwright section to 'browser' section
@@ -192,9 +194,11 @@ class SeeActAgent:
 
         except FileNotFoundError:
             print(f"Error: File '{os.path.abspath(config_path)}' not found.")
+            
         except toml.TomlDecodeError:
             print(f"Error: File '{os.path.abspath(config_path)}' is not a valid TOML file.")
 
+        self.worker_id = worker_id
         self.config_path = config_path
         self.config = config
         self._meta = {"config_dir": str(getattr(self, "_config_dir", Path(os.getcwd()))), "config_path": str(config_path) if config_path else None}
@@ -209,7 +213,7 @@ class SeeActAgent:
         self._bb_api_key = None
         self.tasks = [self.config["basic"]["default_task"]]
         self._step_metrics: list[dict[str, float | int | bool]] = []
-        self._manifest = None
+        self._manifest: ManifestRecord | None = None
         self._manifest_selectors: dict[str, Any] = {}
         self._manifest_step_used = False
         self._manifest_config = self.config.get("manifest", {}) or {}
@@ -243,13 +247,17 @@ class SeeActAgent:
         # for handler in self.logger.handlers:
         #     self.dev_logger.addHandler(handler)
 
-        try:
-            if engine_factory is not None:
-                self.engine = engine_factory(**self.config['openai'])
-            else:
-                self.engine = None
-        except Exception:
-            self.engine = None
+        #try:
+        #    if engine_factory is not None:
+        #        self.engine = engine_factory(**self.config['openai'])
+        #    else:
+        #        self.engine = None
+        #except Exception as e:
+        #    self.logger.error(f"Error initializing prediction engine: {e}")
+            # should probably let it crash here
+            #self.engine = None
+        #    raise e
+        self.engine = None
         self.taken_actions = []
 
         if self.config["agent"]["grounding_strategy"] == "pixel_2_stage":
@@ -279,6 +287,7 @@ class SeeActAgent:
                 "button:has-text('checkout' i)", "a[href*='/checkout']",
             ]),
         }
+        
 
     @staticmethod
     def _categorize_url(url: str) -> Tuple[bool, bool]:
@@ -330,8 +339,15 @@ class SeeActAgent:
                 seen.add(k); out.append(k)
         return out[:6]
 
-    async def _macro_next_action(self):
+    async def _macro_next_action(self, override=False):
         """Heuristic next action to progress common shopping flows (collection → PDP → size → ATC → checkout)."""
+        #if not override and self.config["agent"].get("heuristic", True) is not True:
+        #    return None
+        if override:
+            self.logger.warning("Heuristic macro action override in effect")
+        elif self.config["agent"].get("heuristic", True) is not True:
+            return None # disabled
+        
         page = self.page
         url = ""
         try:
@@ -741,13 +757,13 @@ To be successful, it is important to follow the following rules:
 
     def _setup_logger(self, redirect_to_dev_log=False):
         """Set up a logger to log to both file and console within the main_path."""
-        logger_name = 'SeeActAgent'
+        logger_name = f'SeeActAgent_Worker_{self.worker_id}'
         logger = logging.getLogger(logger_name)
         logger.setLevel(logging.INFO)
         if not logger.handlers:  # Avoid adding handlers multiple times
             # Create a file handler for writing logs to a file
-            log_filename = 'agent.log'
-            f_handler = logging.FileHandler(os.path.join(self.main_path, log_filename))
+            log_filename = f'agent_worker_{self.worker_id}.log'
+            f_handler = logging.FileHandler(os.path.join(self.main_path, log_filename), mode='a')
             f_handler.setLevel(logging.INFO)
 
             # Create a console handler for printing logs to the terminal
@@ -766,7 +782,7 @@ To be successful, it is important to follow the following rules:
             logger.addHandler(f_handler)
             if not redirect_to_dev_log:  # Only add console handler if not redirecting to dev log
                 logger.addHandler(c_handler)
-
+                
         return logger
 
     async def page_on_close_handler(self):
@@ -820,16 +836,17 @@ To be successful, it is important to follow the following rules:
             pass
 
     async def start(self, headless=None, args=None, website=None):
-        if self.engine is None:
+        if self.engine is None: # TODO: at this point, this probably would never happen
             try:
                 if engine_factory is None:
                     from .demo_utils.inference_engine import engine_factory as _ef  # type: ignore
                 else:
                     _ef = engine_factory
                 self.engine = _ef(**self.config['openai'])
-            except Exception:
+            except Exception as e:
                 # Defer engine errors to first use to allow construction under tests without API keys
-                self.engine = None
+                self.logger.warning("LLM Engine Initialization failed.")
+                raise e
         if website:
             self._load_manifest_for_url(website)
         # Lazy import to respect test stubs in sys.modules
@@ -888,10 +905,10 @@ To be successful, it is important to follow the following rules:
                 cdp_url, session_id = bb_create(pid, api_key, api_base=api_base, session_options=session_options)  # type: ignore
                 self._bb_session_id = session_id
                 self._bb_api_key = api_key
-                try:
-                    self.logger.info(f"Browserbase session created: session_id={session_id} cdp_url={cdp_url}")
-                except Exception:
-                    pass
+                #try:
+                self.logger.info(f"Browserbase session created: session_id={session_id} cdp_url={cdp_url}")
+                #except Exception:
+                    #pass
             except Exception as e:
                 raise RuntimeError(f"Failed to create Browserbase session: {e}")
 
@@ -991,10 +1008,10 @@ To be successful, it is important to follow the following rules:
             return
         domain = self._extract_domain(url)
         manifest_cfg = self._manifest_config or {}
-        cache_dir_value = manifest_cfg.get("cache_dir")
-        cache_dir_path = None
-        if cache_dir_value:
-            cache_dir_path = Path(os.path.expandvars(cache_dir_value)).resolve()
+        manifest_dir_value = manifest_cfg.get("dir") or manifest_cfg.get("cache_dir")
+        manifest_dir_path = None
+        if manifest_dir_value:
+            manifest_dir_path = Path(os.path.expandvars(str(manifest_dir_value))).resolve()
         candidates = []
         if domain:
             candidates.append(domain)
@@ -1002,12 +1019,14 @@ To be successful, it is important to follow the following rules:
             if len(parts) > 2:
                 candidates.append(".".join(parts[-2:]))
         for cand in candidates:
-            manifest = load_manifest(cand, cache_dir=cache_dir_path)
+            if manifest_dir_path is None:
+                continue
+            manifest = load_manifest_from_dir(cand, manifest_dir_path)
             if manifest:
                 self._manifest = manifest
-                selectors = manifest.data.get("selectors", {}) or {}
+                selectors = manifest.selectors
                 self._manifest_selectors = selectors
-                overlay_selector = (selectors.get("overlays") or {}).get("close_button")
+                overlay_selector = (selectors.get("overlays") or {}).get("close_button") if isinstance(selectors, dict) else None
                 if overlay_selector:
                     register_overlay_hint(cand, overlay_selector)
                 break
@@ -1257,10 +1276,10 @@ To be successful, it is important to follow the following rules:
             pass
         self._last_target_key = _target_key
         # Runner path calls perform_action directly; ensure actions are recorded
-        try:
-            self.taken_actions.append(new_action)
-        except Exception:
-            pass
+        #try:
+        self.taken_actions.append(new_action)
+        #except Exception:
+        #    pass
         return new_action
 
     async def predict(self):
@@ -1375,8 +1394,8 @@ To be successful, it is important to follow the following rules:
         self.logger.info("-" * terminal_width)
         self.logger.info("One-turn mode: generating structured decision in a single call.")
         self.logger.info("-" * terminal_width)
+        self.logger.info(f"Grounding Strategy: {self.config['agent']['grounding_strategy']}")
         if self.config["agent"]["grounding_strategy"] == "pixel_2_stage":
-
             # For pixel mode, keep current behavior minimal (not commonly used here)
             pred_element_label, pred_action, pred_value = postprocess_action_lmm_pixel("")
             prediction = {"action_generation": "", "action_grounding": "", "element": None,
@@ -1403,8 +1422,10 @@ To be successful, it is important to follow the following rules:
                 "manifest_available": bool(manifest_selectors),
                 "manifest_used": False,
             }
+            self.logger.info(f"Found {num_choices} candidate elements on the page.")
             # Heuristic-first: try a macro step immediately if it can make obvious progress
             try:
+                self.logger.info("Trying heuristic macro action before LLM grounding...")
                 macro_pred = await self._macro_next_action()
                 if macro_pred and macro_pred.get("action") not in [None, "", "NONE"]:
                     self.predictions.append(macro_pred)
@@ -1412,10 +1433,14 @@ To be successful, it is important to follow the following rules:
                     step_metrics_entry["manifest_used"] = getattr(self, "_manifest_step_used", False)
                     self._step_metrics.append(step_metrics_entry)
                     return macro_pred
-            except Exception:
+                else:
+                    self.logger.info("Heuristic macro action did not yield a valid action.")
+            except Exception as e:
+                self.logger.info("Heuristic macro action failed", e)
                 pass
             if num_choices == 0:
-                prediction = await self._macro_next_action()
+                self.logger.warning("No interactive elements found; using fallback macro action, overriding settings.")
+                prediction = await self._macro_next_action(override=True)
                 self.predictions.append(prediction)
                 step_metrics_entry["macro_used"] = True
                 step_metrics_entry["manifest_used"] = getattr(self, "_manifest_step_used", False)
@@ -1445,10 +1470,10 @@ To be successful, it is important to follow the following rules:
                 )
                 llm_ms_total += int((time.time() - t_llm0) * 1000)
                 step_metrics_entry["llm_ms"] = llm_ms_total
-                self.logger.info("🤖 Action Grounding Output 🤖")
+                self.logger.info(f"🤖 Action Grounding Output 🤖")
                 if output:
                     for line in output.split('\n'):
-                        self.logger.info(line)
+                        self.logger.info(line.strip())
 
                 if not output:
                     # LLM timed out → use fallback macro for this step
@@ -1474,7 +1499,8 @@ To be successful, it is important to follow the following rules:
                     break
             if prediction is None:
                 # No actionable choice from batches → use fallback macro
-                prediction = await self._macro_next_action()
+                self.logger.warning("LLM did not select a valid element from any batch; using fallback macro action.")
+                prediction = await self._macro_next_action(override=True)
                 step_metrics_entry["macro_used"] = True
             try:
                 self.logger.info(f"metrics: scan_ms={scan_ms} llm_ms={llm_ms_total} macro_used={step_metrics_entry['macro_used']} num_candidates={num_choices}")

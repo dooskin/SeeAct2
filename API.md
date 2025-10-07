@@ -7,6 +7,12 @@ This document describes the HTTP APIs that power Calibration and Experiment runs
 - Site scoping: Every request includes a `site_id` that must belong to the caller’s org
 - Versioning: Path-based only (e.g., `/v1/...`) — no org/tenant prefix
 - Changelog: [TODO] See README “Changelog” section; add entries on breaking changes
+- Runtime manifests now live on disk. The runner and CLI read JSON files from a manifest directory (default: `site_manifest/` at repo root; override with `SEEACT_MANIFEST_DIR` or `--manifest-dir`). The old Python manifest package from earlier releases has been removed.
+- A sample manifest (`site_manifest/example.com.json`) ships with the repo. A fresh environment can verify installation via:
+  ```bash
+  python -m seeact.runner --tasks data/online_tasks/sample_tasks.json --metrics-dir runs/smoke
+  ```
+  (expects a quick smoke run; set `SEEACT_MANIFEST_DIR` first if you relocate manifests.)
 
 ## Personas‑only API (existing)
 The personas endpoints used by the CLI remain unchanged. See the README section “API Reference (Personas‑only)” for details. The Calibration Job API orchestrates those endpoints under a single call and streams progress over SSE.
@@ -245,4 +251,3 @@ curl -N https://www.squoosh.ai/v1/experiments/<experiment_id>/events \
 
 ## Changelog [TODO]
 Add release notes when breaking changes are introduced.
-

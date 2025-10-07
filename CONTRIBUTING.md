@@ -96,6 +96,7 @@ Artifacts live under `PERSONAS_DATA_DIR` (default `data/personas`).
 
 - Runner accepts a personas YAML (`personas: {persona_id: {weight: 1.0}, ...}`) via `--personas` and tags each task with `persona_id`.
 - Concurrency caveat: effective concurrency is capped by the number of tasks enqueued; ensure your tasks file has ≥N tasks to utilize `--concurrency N`.
+- Manifests are loaded from disk. Keep `site_manifest/` committed for smoke tests, or set `SEEACT_MANIFEST_DIR`/`--manifest-dir` when working with alternate locations; the runner will fail fast if the directory is missing or empty.
 
 ## Contribution Workflow
 
@@ -105,7 +106,7 @@ Artifacts live under `PERSONAS_DATA_DIR` (default `data/personas`).
 4) For new endpoints, add tests under `tests/api/` and update README sections.
 5) Keep personas decoupled: the runner should only consume persona_ids and log them; do not import personas logic into the runner.
 6) Update docs: reflect behavior changes in README and this file.
-7) If you change site flows/selectors, refresh the manifest (`python -m seeact.manifest.scrape <domain>`) and commit the updated JSON under `site_manifest/`.
+7) If you change site flows/selectors, refresh the manifest (`PYTHONPATH=src python src/seeact/manifest/scraper.py <domain>`) and commit the updated JSON under `site_manifest/`.
 
 ## Pull Request Checklist
 
@@ -143,6 +144,74 @@ Artifacts live under `PERSONAS_DATA_DIR` (default `data/personas`).
 - Run runner (local): `python -m seeact.runner -c config/base.toml --tasks ... --personas data/personas/runner_personas.yaml`
 
 Thanks for contributing and keeping the personas layer decoupled and testable!
+
+## Architecture (ASCII Overview)
+
+```
+                      +---------------------------+
+                      |        Frontend (UI)      |
+                      | Calibrate / Experiments   |
+                      +------------+--------------+
+                                   |
+                         HTTPS (FastAPI, SSE)
+                                   v
+        +-----------------------------------------------+
+        |          Application Service (/v1/...)         |
+        |                                               |
+        |  +-------------------+      +----------------+ |
+        |  | Personas API      |      | Calibration    | |
+        |  | /v1/personas/*    |      | Orchestrator   | |
+        |  +---------+---------+      | /v1/calibrations| |
+        |            |                +---------+------+ |
+        |            | Personas       SSE       |        |
+        |            v progress                |         |
+        |  +-----------------------+           |         |
+        |  | Personas Adapter      |           |         |
+        |  | (GA/Neon read) [TODO] |<----------+         |
+        |  +----------+------------+                     |
+        |             | Neon data                         |
+        |             v                                    |
+        |  +-----------------------+                       |
+        |  | Personas Builder      |                       |
+        |  | 1,000 pool, k-anon    |                       |
+        |  +----------+------------+                       |
+        |             | synthetic prompts                  |
+        |             v                                    |
+        |  +-----------------------+                       |
+        |  | Prompt Renderer       |                       |
+        |  | UXAgent-aligned text  |                       |
+        |  +-----------+-----------+                       |
+        |              | persists prompts                  |
+        |              v                                    |
+        |  +-----------------------+        +------------+ |
+        |  | Postgres (personas,   |<-------| SSE events | |
+        |  | prompts, distributions|        +------------+ |
+        |  +-----------+-----------+                       |
+        |              |                                    |
+        |  +-----------------------+                       |
+        |  | Experiments           |                       |
+        |  | Orchestrator          |                       |
+        |  | /v1/experiments       |                       |
+        |  +-----------+-----------+                       |
+        |              | assigns A/B                       |
+        |              v                                    |
+        |  +-----------------------+                       |
+        |  | SeeAct Runner Fleet   | --CDP--> Browserbase  |
+        |  | (persona-weighted)    |           provider    |
+        |  +-----------+-----------+                       |
+        |              | metrics / artifacts [TODO]        |
+        |              v                                    |
+        |  +-----------------------+                       |
+        |  | Postgres (experiments,|                       |
+        |  | sessions, variant data)|                      |
+        +-----------------------------------------------+
+
+Legend:
+- Neon Postgres supplies GA-derived traffic/funnel metrics (Calibration) [TODO connector].
+- Application Service streams SSE events (`queued`, `prompts_generated`, `progress`, `complete`, etc.).
+- Runner executes synthetic sessions using Browserbase (local Playwright provider [TODO]).
+- Metrics/artifacts retention and signed URLs for experiments [TODO].
+```
 
 ## Architecture (ASCII Overview)
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Tuple
 
-from seeact.manifest import Manifest
+from seeact.utils.manifest_loader import ManifestRecord
 
 
 CAPABILITY_MAP = {
@@ -24,11 +24,11 @@ class Recommendation:
     payload: Dict[str, object]
 
 
-def _to_manifest_selectors(manifest: Manifest | Dict[str, object] | None) -> Dict[str, object]:
+def _to_manifest_selectors(manifest: ManifestRecord | Dict[str, object] | None) -> Dict[str, object]:
     if manifest is None:
         return {}
-    if isinstance(manifest, Manifest):
-        return manifest.data.get("selectors", {}) or {}
+    if isinstance(manifest, ManifestRecord):
+        return manifest.selectors or {}
     data = getattr(manifest, "data", None)
     if isinstance(data, dict):
         return data.get("selectors", {}) or {}
