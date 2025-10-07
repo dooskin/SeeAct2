@@ -224,8 +224,9 @@ class SeeActAgent:
 
         save_root = Path(self.config["basic"]["save_file_dir"]).resolve()
         save_root.mkdir(parents=True, exist_ok=True)
-        self.main_path = str((save_root / datetime.now().strftime("%Y%m%d_%H%M%S")).resolve())
-        os.makedirs(self.main_path, exist_ok=True)
+        self.main_path = self.config["basic"].get("main_path")
+        #os.makedirs(self.main_path, exist_ok=True)
+        print(f"SeeActAgent_{worker_id}: Saving files to {self.main_path}")
         self.action_space = ["CLICK", "PRESS ENTER", "HOVER", "SCROLL UP", "SCROLL DOWN", "NEW TAB", "CLOSE TAB",
                              "GO BACK", "GO FORWARD",
                              "TERMINATE", "SELECT", "TYPE", "GOTO", "MEMORIZE"]  # Define the list of actions here
@@ -305,10 +306,10 @@ class SeeActAgent:
             return self.engine.generate(**kwargs)
             #except Exception as e:
             #    return f"ELEMENT: Z\nACTION: NONE\nVALUE: None\nERROR: {e}"
-        try:
+        try:  # TODO: there seems to be an occasional bug where the timeout results in a new instance of the task being created?
             return await asyncio.wait_for(asyncio.to_thread(_call), timeout=self._llm_timeout_sec)
         except asyncio.TimeoutError:
-            logging.warning(f"LLM generation timed out after {self._llm_timeout_sec} seconds", exc_info=True)
+            self.logger.warning(f"LLM generation timed out after {self._llm_timeout_sec} seconds", exc_info=True)  
             return None
 
     def _task_keywords(self) -> list[str]:
@@ -1690,7 +1691,7 @@ To be successful, it is important to follow the following rules:
 
     @property
     def screenshot_path(self):
-        return os.path.join(self.main_path, 'screenshots', f'screen_{self.time_step}.png')
+        return os.path.join(self.main_path, 'screenshots', f'screen_{self.worker_id}_{self.time_step}.png')
 
     @property
     def trace_path(self):

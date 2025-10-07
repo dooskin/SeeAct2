@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import copy
+from datetime import datetime
 import json
 import logging
 import os
@@ -524,6 +525,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except SettingsLoadError as exc:
         parser.error(str(exc))
         return 1
+
+    save_root = Path(settings["basic"]["save_file_dir"]).resolve()
+    save_root.mkdir(parents=True, exist_ok=True)
+    main_path = str((save_root / datetime.now().strftime("%Y%m%d_%H%M%S")).resolve())
+    os.makedirs(main_path, exist_ok=True)
+    logger.info(f"Saving run files and logs to {main_path}")
+    settings['basic']['main_path'] = main_path
     asyncio.run(run_pool(settings, args))
     return 0
 
