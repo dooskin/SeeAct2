@@ -31,6 +31,7 @@ async def execute_task(agent, task: Dict[str, Any], max_steps: int) -> TaskResul
 
     steps = 0
     while not agent.complete_flag and steps < max_steps:
+        print("PRED!!!")
         prediction = await agent.predict()
         if not prediction:
             raise TaskExecutionRetryError(task_id, "Agent failed to predict next action.", context=__name__) # possibly retry task
@@ -44,11 +45,12 @@ async def execute_task(agent, task: Dict[str, Any], max_steps: int) -> TaskResul
                 element_repr=None,
             )
         except playwright.async_api.TimeoutError as e:
+            print("TIMEOUT??")
             raise TaskExecutionRetryError(task_id, 
                                           "Action timed out: " + str(prediction.get("action"))  + " at element " + str(prediction.get("element")), 
                                           context=__name__) from e
         steps += 1
-
+    print("DONE!!! Num Steps:", steps)
     await agent.stop()
     t1 = time.time()
     result_payload = getattr(agent, "final_result", None)

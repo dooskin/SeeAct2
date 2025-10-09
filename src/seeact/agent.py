@@ -40,6 +40,7 @@ from urllib.parse import urlparse
 import playwright
 
 from seeact.Exceptions import TaskExecutionRetryError
+from seeact.runner import JsonlMetricsSink
 
 try:
     import toml  # type: ignore
@@ -118,6 +119,7 @@ class SeeActAgent:
                  model="gpt-4o",
                  temperature=0.9,
                  worker_id: Optional[int] = None,
+                 sink : JsonlMetricsSink = None,
                  ):
 
         try:
@@ -278,6 +280,8 @@ class SeeActAgent:
                 "button:has-text('checkout' i)", "a[href*='/checkout']",
             ]),
         }
+        
+        self.sink = sink
         
 
     @staticmethod
@@ -1106,43 +1110,49 @@ To be successful, it is important to follow the following rules:
             _url_now = self.page.url
         except Exception:
             _url_now = ""
-        _target_key = f"{action_name}|{element_repr or ''}".strip()
+        _target_key = f"{action_name}|{target_element}".strip()
         if getattr(self, "_last_url", None) is None:
             self._last_url = ""
         if getattr(self, "_last_target_key", None) is None:
             self._last_target_key = ""
         if getattr(self, "_repeat_clicks", None) is None:
-            self._repeat_clicks = 0
-        if _url_now == self._last_url and _target_key and _target_key == self._last_target_key and action_name == "CLICK":
-            self._repeat_clicks += 1
+            self._repeat_actions = 0
+        if _url_now == self._last_url and _target_key and _target_key == self._last_target_key:
+            self._repeat_actions += 1
         else:
-            self._repeat_clicks = 0
-        if self._repeat_clicks >= 1 and action_name == "CLICK":
+            self._repeat_actions = 0
+        if self._repeat_actions >= 1:
             # If we've already nudged once and still repeating, escalate to macro fallback
-            if self._repeat_clicks >= 2:
-                try:
-                    macro_pred = await self._macro_next_action()
-                    # Execute macro action immediately to break the loop
-                    exec_msg = await self.perform_action(
-                        target_element=macro_pred.get("element"),
-                        action_name=macro_pred.get("action"),
-                        value=macro_pred.get("value"),
-                        target_coordinates=None,
-                        element_repr=(macro_pred.get("element") or {}).get("description") if macro_pred.get("element") else None,
-                    )
-                    return exec_msg
-                except Exception as _e:
-                    pass
+            # TODO: Removed the macro fallback; consider adding a prompt-modification fallback instead
+            #if self._repeat_actions >= 2:
+                #try:
+                #macro_pred = await self._macro_next_action()
+                # Execute macro action immediately to break the loop
+                #exec_msg = await self.perform_action(
+                #    target_element=macro_pred.get("element"),
+                #    action_name=macro_pred.get("action"),
+                #    value=macro_pred.get("value"),
+                #    target_coordinates=None,
+                #    element_repr=(macro_pred.get("element") or {}).get("description") if macro_pred.get("element") else None,
+                #)
+                #return exec_msg
             # Otherwise, do a nudge scroll and rescan next step
-            #try:
+            self.logger.info(f"Detected repeat of {action_name} on {self._last_url}; performing auto-nudge scroll")
             await self.page.evaluate("window.scrollBy(0, Math.min(window.innerHeight * 0.6, 600));")
-            #except Exception:
-            #    pass
-            auto_msg = f"Auto-nudge: suppressed repeat of {action_name} {element_repr}; scrolled"
+            await self.sink.write({
+                "event" : "action",
+                "details": {
+                    "element": None,
+                    "action": "SCROLL DOWN",
+                    "value": None,
+                    "reason": "repeat_nudge"
+                }
+            })
+            auto_msg = f"Auto-nudge: suppressed repeat of {action_name} {element_repr}| SCROLL DOWN"
             self.taken_actions.append(auto_msg)
             # Update guard state and return without executing the repeated action
             self._last_url = _url_now
-            self._last_target_key = _target_key
+            self._last_target_key = "SCROLL DOWN|"
             return auto_msg
 
         if self.config["agent"]["grounding_strategy"] == "pixel_2_stage":
@@ -1152,7 +1162,6 @@ To be successful, it is important to follow the following rules:
             element_repr = target_element['description']
         else:
             selector = None
-
 
         page = self.page
         element_str = repr(element_repr) if element_repr else "N/A"
@@ -1264,6 +1273,15 @@ To be successful, it is important to follow the following rules:
         if action_name in self.with_value_op:
             new_action += ": " + value
 
+        await self.sink.write({
+            "event" : "action",
+            "details": {
+                "element": f"{repr(target_element['description'])} {repr(selector)}" if target_element else None,
+                "action": action_name,
+                "value": value,
+                "reason": "normal"
+            }
+        })    
         # self.dev_logger.info(new_action)
         # Update repeat guard state and append action for runner parity
         #try:
@@ -1283,7 +1301,7 @@ To be successful, it is important to follow the following rules:
         """
         Generate a prediction for the next action based on the webpage elements and previous actions.
         """
-
+        
         self.time_step += 1
         #try:
         # originally this was looked for in session_control['active_page']
@@ -1409,11 +1427,11 @@ To be successful, it is important to follow the following rules:
             self.logger.info(f"Found {num_choices} candidate elements on the page.")
             # Heuristic-first: try a macro step immediately if it can make obvious progress
             try:
-                self.logger.info("Trying heuristic macro action before LLM grounding...")
                 macro_pred = await self._macro_next_action()
                 if macro_pred is None:
                     pass # macro next action disable
                 elif macro_pred.get("action") not in [None, "", "NONE"]:
+                    self.logger.info("Trying heuristic macro action before LLM grounding...")
                     self.predictions.append(macro_pred)
                     step_metrics_entry["macro_used"] = True
                     step_metrics_entry["manifest_used"] = getattr(self, "_manifest_step_used", False)
@@ -1487,11 +1505,10 @@ To be successful, it is important to follow the following rules:
                 # No actionable choice from batches → use fallback macro
                 self.logger.warning("LLM did not select a valid element from any batch; using fallback macro action.")
                 prediction = await self._macro_next_action(override=True)
+                self.logger.info(f"Fallback macro prediction: {prediction['action']} {prediction.get('element')} {prediction.get('value')}")
                 step_metrics_entry["macro_used"] = True
-            try:
                 self.logger.info(f"metrics: scan_ms={scan_ms} llm_ms={llm_ms_total} macro_used={step_metrics_entry['macro_used']} num_candidates={num_choices}")
-            except Exception:
-                pass
+
             step_metrics_entry["manifest_used"] = getattr(self, "_manifest_step_used", False)
             self._step_metrics.append(step_metrics_entry)
 

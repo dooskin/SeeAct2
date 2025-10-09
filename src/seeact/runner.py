@@ -25,23 +25,9 @@ from seeact.recommendations.gating import gate_recommendations
 from seeact.settings import load_settings, SettingsLoadError
 from seeact.utils.manifest_loader import load_manifest as load_manifest_from_dir, require_manifest_dir
 
+# configured more in main()
 logger = logging.getLogger(__name__)  # runner module logger
 logger.setLevel(logging.DEBUG)
-#  Add a file handler for the runner logger
-f_handler = logging.FileHandler('runner.log')
-f_handler.setLevel(logging.DEBUG)
-f_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-f_handler.setFormatter(f_format)
-logger.addHandler(f_handler)
-
-# Add a console handler for the runner logger
-c_handler = logging.StreamHandler()
-c_handler.setLevel(logging.INFO)
-# Include logger name in the console output
-c_format = logging.Formatter('runner.py: %(asctime)s - %(name)s - %(levelname)s - %(message)s')
-c_handler.setFormatter(c_format)
-logger.addHandler(c_handler)
-
 
 @dataclass
 class RunnerConfig:
@@ -116,9 +102,34 @@ class JsonlMetricsSink:
                 f"[run {record.get('run_id')}] worker={record.get('worker_id')} error task={record.get('task_id')}{suffix} "
                 f"{record.get('error')}: {record.get('message')}"
             )
+        elif ev == "action":
+            details = record.get("details", {})
+            elem = str(details.get("element"))
+            if elem and len(elem) > 60:
+                elem = str(elem)[:57] + "..."
+            reason = details.get("reason", "normal")
+            suffix = f" ({reason})" if reason != "normal" else ""
+            print(
+                f"[run {record.get('run_id')}] worker={record.get('worker_id')} action task={record.get('task_id')}{suffix} "
+                f"{details.get('action')} {elem[:10]} {details.get('value') or ''}"
+            )
         elif ev == "run_complete":
             print(f"[run {record.get('run_id')}] complete. metrics={self.path}")
 
+        elif ev == "task_retry":
+            pid = record.get("persona_id")
+            suffix = f" persona={pid}" if pid else ""
+            print(
+                f"[run {record.get('run_id')}] worker={record.get('worker_id')} retry task={record.get('task_id')}{suffix} "
+                f"attempt={record.get('attempt')} delay_sec={record.get('delay_sec'):.1f}"
+            )
+        elif ev == "task_timeout":
+            pid = record.get("persona_id")
+            suffix = f" persona={pid}" if pid else ""
+            print(
+                f"[run {record.get('run_id')}] worker={record.get('worker_id')} timeout task={record.get('task_id')}{suffix} "
+                f"abandoning task"
+            )
 
 def _load_tasks(path: Path) -> List[Dict[str, Any]]:
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -230,7 +241,7 @@ async def _run_single_task(
     runtime_cfg = task_config.setdefault("runtime", {})
     if shared_session and shared_session.get("cdp_url"):
         runtime_cfg["cdp_url"] = shared_session["cdp_url"]
-    agent = SeeActAgent(config=task_config, worker_id=worker_id)
+    agent = SeeActAgent(config=task_config, worker_id=worker_id, sink=sink)
     payload = dict(task)
     payload.update({"task_id": task_id, "website": website, "confirmed_task": confirmed_task})
 
@@ -336,8 +347,10 @@ async def _worker_loop(
             
             except Exception as e:
                 if isinstance(e, TaskExecutionRetryError):
+                    logger.debug(f"Retryable error details: {e}", exc_info=True)
                     attempt += 1
                     if attempt > runner_cfg.max_retries:
+                        logger.warning(f"Max retries exceeded for task {task.get('task_id')}, abandoning task.")
                         break
                     delay = min(runner_cfg.backoff_base_sec * (2 ** (attempt - 1)), runner_cfg.backoff_max_sec)
                     await sink.write(
@@ -353,7 +366,6 @@ async def _worker_loop(
                         }
                     )
                     logger.info(f"Retrying task {task.get('task_id')} in {delay:.1f}s (attempt {attempt})")
-                    logger.debug(f"Retryable error details: {e}", exc_info=True)
                     await asyncio.sleep(delay)
                 elif isinstance(e, asyncio.TimeoutError):
                     await sink.write(
@@ -367,7 +379,6 @@ async def _worker_loop(
                         }
                     )
                     logger.warning(f"Task {task.get('task_id')} timed out after {runner_cfg.task_timeout_sec}s. Abandoning task.")
-                    queue.task_done() # I think abandoning the task here needs to mark it done
                     break
                 else:
                     await sink.write(
@@ -383,9 +394,8 @@ async def _worker_loop(
                             "ts": time.time(),
                         }
                     )
-                    queue.task_done()
                     logger.error(f"Task {task.get('task_id')} failed for other reasons: {e}", exc_info=True)
-                    raise e
+                    break
         queue.task_done()
     if session_info and close_session_fn and session_info.get("session_id") and session_info.get("api_key"):
         try:
@@ -397,7 +407,8 @@ async def _worker_loop(
 
 def _build_runner_config(settings: Dict[str, Any], args: argparse.Namespace) -> RunnerConfig:
     runner_cfg = settings.get("runner", {}) or {}
-    metrics_dir = Path(args.metrics_dir).resolve() if args.metrics_dir else Path(runner_cfg.get("metrics_dir", "runs")).resolve()
+    #metrics_dir = Path(args.metrics_dir).resolve() if args.metrics_dir else Path(runner_cfg.get("metrics_dir", "runs")).resolve()
+    metrics_dir = Path(args.metrics_dir).resolve() if args.metrics_dir else Path(runner_cfg.get("metrics_dir", "../online_results")).resolve()
     personas_path = None
     if args.personas:
         personas_path = Path(args.personas).resolve()
@@ -422,7 +433,7 @@ def _build_runner_config(settings: Dict[str, Any], args: argparse.Namespace) -> 
     )
 
 
-async def run_pool(settings: Dict[str, Any], args: argparse.Namespace) -> None:
+async def run_pool(settings: Dict[str, Any], args: argparse.Namespace, logger: logging.Logger) -> None:
     runner_cfg = _build_runner_config(settings, args)
     manifest_dir = require_manifest_dir(runner_cfg.manifest_dir)
     runner_cfg.manifest_dir = manifest_dir
@@ -476,7 +487,7 @@ async def run_pool(settings: Dict[str, Any], args: argparse.Namespace) -> None:
     for _ in range(runner_cfg.concurrency):
         queue.put_nowait(None)
 
-    sink = JsonlMetricsSink(runner_cfg.metrics_dir / f"run_{uuid.uuid4().hex[:12]}", verbose=runner_cfg.verbose)
+    sink = JsonlMetricsSink(runner_cfg.metrics_dir / f"run_{settings['basic']['run_uuid']}", verbose=runner_cfg.verbose)
     run_id = sink.base_dir.name.split("run_")[-1]
     await sink.write(
         {
@@ -513,26 +524,46 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    logger.info("Starting SeeAct runner")
+    run_uuid = uuid.uuid4().hex[:10]
+    
     parser = build_arg_parser()
     args = parser.parse_args(argv)
     try:
         settings, _ = load_settings(
             config_path=Path(args.config).resolve() if args.config else None,
             profiles=args.profile or [],
-            logger=logger
+            #logger=print
         )
     except SettingsLoadError as exc:
         parser.error(str(exc))
         return 1
-
+    settings['basic']['run_uuid'] = run_uuid
+    
     save_root = Path(settings["basic"]["save_file_dir"]).resolve()
     save_root.mkdir(parents=True, exist_ok=True)
-    main_path = str((save_root / datetime.now().strftime("%Y%m%d_%H%M%S")).resolve())
+    main_path = str((save_root / f"logs_{run_uuid}").resolve())
+    # add uuid to main_path to avoid overwriting
+    
     os.makedirs(main_path, exist_ok=True)
+
+    #  Add a file handler for the runner logger
+    f_handler = logging.FileHandler(f'{main_path}/runner.log')
+    f_handler.setLevel(logging.DEBUG)
+    f_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    f_handler.setFormatter(f_format)
+    logger.addHandler(f_handler)
+    # Add a console handler for the runner logger
+    c_handler = logging.StreamHandler()
+    c_handler.setLevel(logging.INFO)
+    # Include logger name in the console output
+    c_format = logging.Formatter('runner.py: %(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    c_handler.setFormatter(c_format)
+    logger.addHandler(c_handler)  
+    logger.info("Starting SeeAct runner with uuid %s", run_uuid)
     logger.info(f"Saving run files and logs to {main_path}")
     settings['basic']['main_path'] = main_path
-    asyncio.run(run_pool(settings, args))
+    
+    asyncio.run(run_pool(settings, args, logger))
     return 0
 
 
