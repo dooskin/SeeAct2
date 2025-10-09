@@ -57,7 +57,7 @@ max_retries = 0
 backoff_base_sec = 1.5
 backoff_max_sec = 15.0
 task_timeout_sec = 180
-metrics_dir = "../runs"
+metrics_dir = "../online_results"
 verbose = false
 
 [manifest]

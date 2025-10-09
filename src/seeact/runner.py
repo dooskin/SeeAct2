@@ -110,7 +110,7 @@ class JsonlMetricsSink:
             reason = details.get("reason", "normal")
             suffix = f" ({reason})" if reason != "normal" else ""
             print(
-                f"[run {record.get('run_id')}] worker={record.get('worker_id')} action task={record.get('task_id')}{suffix} "
+                f"[action] worker={details.get('worker_id')}{suffix} "
                 f"{details.get('action')} {elem[:10]} {details.get('value') or ''}"
             )
         elif ev == "run_complete":
@@ -362,7 +362,7 @@ async def _worker_loop(
                             "attempt": attempt,
                             "delay_sec": delay,
                             "persona_id": task.get("_persona_id"),
-                            "ts": time.time(),
+                            "timestamp": time.time(),
                         }
                     )
                     logger.info(f"Retrying task {task.get('task_id')} in {delay:.1f}s (attempt {attempt})")
@@ -375,7 +375,7 @@ async def _worker_loop(
                             "worker_id": worker_id,
                             "task_id": task.get("task_id"),
                             "persona_id": task.get("_persona_id"),
-                            "ts": time.time(),
+                            "timestamp": time.time(),
                         }
                     )
                     logger.warning(f"Task {task.get('task_id')} timed out after {runner_cfg.task_timeout_sec}s. Abandoning task.")
@@ -391,7 +391,7 @@ async def _worker_loop(
                             "message": str(e),
                             "persona_id": task.get("_persona_id"),
                             "blocked_recommendations": task.get("_recommendations_blocked"),
-                            "ts": time.time(),
+                            "timestamp": time.time(),
                         }
                     )
                     logger.error(f"Task {task.get('task_id')} failed for other reasons: {e}", exc_info=True)
@@ -497,7 +497,7 @@ async def run_pool(settings: Dict[str, Any], args: argparse.Namespace, logger: l
             "num_tasks": enqueued,
             "config_path": settings.get("__meta", {}).get("config_path"),
             "profiles": settings.get("__meta", {}).get("profiles"),
-            "ts": time.time(),
+            "timestamp": time.time(),
         }
     )
 

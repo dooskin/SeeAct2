@@ -882,6 +882,7 @@ To be successful, it is important to follow the following rules:
         elif isinstance(headers, list):
             headers_out = headers or None
 
+        '''
         # Resolve Browserbase session if requested
         if provider == "browserbase" and not cdp_url and bb_create is not None:
             # Read project_id and optional api_base
@@ -916,7 +917,8 @@ To be successful, it is important to follow the following rules:
                     #pass
             except Exception as e:
                 raise RuntimeError(f"Failed to create Browserbase session: {e}")
-
+        '''
+        
         if provider in ("cdp", "browserbase") and cdp_url:
             try:
                 self.session_control['browser'] = await self.playwright.chromium.connect_over_cdp(cdp_url, headers=headers_out)
@@ -1150,7 +1152,9 @@ To be successful, it is important to follow the following rules:
                     "element": None,
                     "action": "SCROLL DOWN",
                     "value": None,
-                    "reason": "repeat_nudge"
+                    "reason": "repeat_nudge",
+                    "worker_id": self.worker_id,
+                    "timestamp": time.time()
                 }
             })
             auto_msg = f"Auto-nudge: suppressed repeat of {action_name} {element_repr}| SCROLL DOWN"
@@ -1285,7 +1289,9 @@ To be successful, it is important to follow the following rules:
                 "element": f"{repr(target_element['description'])} {repr(selector)}" if target_element else None,
                 "action": action_name,
                 "value": value,
-                "reason": "normal"
+                "reason": "normal",
+                "worker_id": self.worker_id,
+                "timestamp": time.time()
             }
         })    
         # self.dev_logger.info(new_action)
@@ -1310,20 +1316,22 @@ To be successful, it is important to follow the following rules:
         
         self.time_step += 1
         # Auto-dismiss overlays (cookie banners, modals) to surface targets
+        print("predicting...")
         await auto_dismiss_overlays(self.page, max_clicks=2)
-
+        print("dismiss overlays called")
         # Completion gate: if on checkout (or equivalent), extract results and terminate
         maybe_done = await self._maybe_complete_and_extract()
         if maybe_done:
             self.predictions.append(maybe_done)
             return maybe_done
 
+        print("start scanning elements")
         scan_t0 = time.time()
         elements = await get_interactive_elements_with_playwright(
             self.page, self.config['browser']['viewport']
         )
         scan_ms = int((time.time() - scan_t0) * 1000)
-
+        print(f"scanned {len(elements)} elements")
         '''
              0: center_point =(x,y)
              1: description
