@@ -44,13 +44,16 @@ async def execute_task(agent, task: Dict[str, Any], max_steps: int) -> TaskResul
                 target_coordinates=prediction.get("target_coordinates"),
                 element_repr=None,
             )
+            # sleep to wait for page load if needed
+            await agent.page.wait_for_load_state('networkidle', timeout=2000)
+            await agent.restore_page_agent_state()
+            #await agent.page.wait_for_load_state('domcontentloaded', timeout=2000)
+
         except playwright.async_api.TimeoutError as e:
-            print("TIMEOUT??")
             raise TaskExecutionRetryError(task_id, 
                                           "Action timed out: " + str(prediction.get("action"))  + " at element " + str(prediction.get("element")), 
                                           context=__name__) from e
         steps += 1
-    print("DONE!!! Num Steps:", steps)
     await agent.stop()
     t1 = time.time()
     result_payload = getattr(agent, "final_result", None)

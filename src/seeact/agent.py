@@ -633,7 +633,7 @@ No Value Operations:
 - NEW TAB: Open a new tab in the browser.
 - GO BACK: Navigate to the previous page in the browser history.
 - GO FORWARD: Navigate to the next page in the browser history.
-- TERMINATE: End the current task, typically used when the task is considered complete or requires potentially harmful actions.
+- TERMINATE: End the current task, typically used when the task is considered complete or requires potentially harmful actions. Remember to use this action when you think the task is complete.
 - NONE: Indicates that no action is necessary at this stage. Used to skip an action or wait.
 
 With Value Operations:
@@ -653,7 +653,7 @@ To be successful, it is important to follow the following rules:
 4. Unlike humans, for typing (e.g., in text areas, text boxes) and selecting (e.g., from dropdown menus or <select> elements), you should try directly typing the input or selecting the choice, bypassing the need for an initial click. 
 5. You should not attempt to create accounts, log in or do the final submission. 
 6. Terminate when you deem the task complete or if it requires potentially harmful actions.
-7. Do not generate same action as the previous one, try different ways if keep failing
+7. Do not generate same action as the previous one, try different ways if keep failing, you can see your previous actions listed after 'previous_actions:'
 8. When there is a floating banner like ads, login, or survey floating taking more than 30% of the page, close the floating banner to proceed, the close button could look like a x on the right top corner, or choose NO THANKS to close it.
 9. When there is a floating banner on top or bottom of the page like cookie policy taking less than 30% of the page, ignore the banner to proceed.  
 10. After typing text into search or text input area, the next action is normally PRESS ENTER
@@ -662,7 +662,7 @@ To be successful, it is important to follow the following rules:
 ''',
 
             "referring_description": f"""(Reiteration)
-First, reiterate your next target element, its detailed location, and the corresponding operation.
+First, reiterate your next target element, its detailed location, and the corresponding operation. Remember to terminate if you think the task is complete based on your previous actions. Remember buttons can only be clicked, not typed into.
 
 (Multichoice Question)
 Below is a multi-choice question, where the choices are elements in the webpage. All elements are arranged in the order based on their height on the webpage, from top to bottom (and from left to right). This arrangement in addition to the normalized coordinates can be used to locate them. From the screenshot, find out where and what each one is on the webpage, taking into account both their text content and HTML details. Then, determine whether one matches your target element if your action involves an element. Please examine the choices one by one. Choose the matching one. If multiple options match your answer, choose the most likely one by re-examining the screenshot, the choices, and your further reasoning.""",
@@ -812,6 +812,16 @@ To be successful, it is important to follow the following rules:
         self.logger.info("Try to reload")
         await page.reload()
 
+    async def restore_page_agent_state(self):
+        if self.config["agent"]["grounding_strategy"] == "text_choice_som":
+            with open(os.path.join(dirname(__file__), "mark_page.js")) as f:
+                mark_page_script = f.read()
+            await self.page.wait_for_load_state("domcontentloaded")
+
+            await self.page.evaluate(mark_page_script)
+            await self.page.evaluate("unmarkPage()")
+            print('cleared previous marks')
+
     async def page_on_open_handler(self, page):
         # Added 'self' to the handler functions to reference the current instance of the class
         page.on("framenavigated", self.page_on_navigation_handler)
@@ -820,12 +830,7 @@ To be successful, it is important to follow the following rules:
         self.page = page
         # Additional event listeners can be added here
         try:
-            if self.config["agent"]["grounding_strategy"] == "text_choice_som":
-                with open(os.path.join(dirname(__file__), "mark_page.js")) as f:
-                    mark_page_script = f.read()
-                await page.wait_for_load_state("domcontentloaded")
-                await self.page.evaluate(mark_page_script)
-                #await self.session_control['active_page'].evaluate(mark_page_script)
+            await self.restore_page_agent_state()
         except Exception as e:
             if "Execution context was destroyed" in str(e):
                 # Navigation happened again — just skip
@@ -1268,7 +1273,8 @@ To be successful, it is important to follow the following rules:
             if selector == "pixel_coordinates":
                 new_action = element_repr + " -> " + action_name
             else:
-                new_action = "[" + target_element['tag_with_role'] + "]" + " "
+                #new_action = "[" + target_element['tag_with_role'] + "]" + " "
+                new_action = ""
                 new_action += target_element['description'] + " -> " + action_name
         if action_name in self.with_value_op:
             new_action += ": " + value
@@ -1303,22 +1309,15 @@ To be successful, it is important to follow the following rules:
         """
         
         self.time_step += 1
-        #try:
-        # originally this was looked for in session_control['active_page']
-        await self.page.wait_for_load_state('domcontentloaded')
         # Auto-dismiss overlays (cookie banners, modals) to surface targets
-        #except Exception:
-        #   pass
         await auto_dismiss_overlays(self.page, max_clicks=2)
 
         # Completion gate: if on checkout (or equivalent), extract results and terminate
-        try:
-            maybe_done = await self._maybe_complete_and_extract()
-            if maybe_done:
-                self.predictions.append(maybe_done)
-                return maybe_done
-        except Exception:
-            pass
+        maybe_done = await self._maybe_complete_and_extract()
+        if maybe_done:
+            self.predictions.append(maybe_done)
+            return maybe_done
+
         scan_t0 = time.time()
         elements = await get_interactive_elements_with_playwright(
             self.page, self.config['browser']['viewport']
@@ -1363,14 +1362,13 @@ To be successful, it is important to follow the following rules:
             await self.start_playwright_tracing()
             return prediction
 
-        #try:
         if self.config["agent"]["grounding_strategy"] == "text_choice_som":
-            with open(os.path.join(dirname(__file__), "mark_page.js")) as f:
-                mark_page_script = f.read()
-            await self.page.evaluate(mark_page_script)
-            await self.page.evaluate("unmarkPage()")
-            await self.page.evaluate("""elements => {
-                return window.som.drawBoxes(elements);
+                with open(os.path.join(dirname(__file__), "mark_page.js")) as f:
+                    mark_page_script = f.read()
+                await self.page.evaluate(mark_page_script)
+                await self.page.evaluate("unmarkPage()")
+                await self.page.evaluate("""elements => {
+                    return window.som.drawBoxes(elements);
                 }""", elements)
         #except Exception as e:
         #    self.logger.info(f"Mark page script error {e}")
