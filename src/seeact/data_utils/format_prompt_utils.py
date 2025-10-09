@@ -32,7 +32,7 @@ def generate_new_query_prompt(system_prompt="", task="", previous_actions=None, 
     query_text += "\n\n"
 
     # Previous Actions
-    previous_action_text = "Previous Actions:\n"
+    previous_action_text = "HERE ARE YOUR PREVIOUS ACTIONS:\n"
     if previous_actions is None:
         previous_actions = []
     for action_text in previous_actions:
