@@ -1316,22 +1316,18 @@ To be successful, it is important to follow the following rules:
         
         self.time_step += 1
         # Auto-dismiss overlays (cookie banners, modals) to surface targets
-        print("predicting...")
         await auto_dismiss_overlays(self.page, max_clicks=2)
-        print("dismiss overlays called")
         # Completion gate: if on checkout (or equivalent), extract results and terminate
         maybe_done = await self._maybe_complete_and_extract()
         if maybe_done:
             self.predictions.append(maybe_done)
             return maybe_done
 
-        print("start scanning elements")
         scan_t0 = time.time()
         elements = await get_interactive_elements_with_playwright(
             self.page, self.config['browser']['viewport']
         )
         scan_ms = int((time.time() - scan_t0) * 1000)
-        print(f"scanned {len(elements)} elements")
         '''
              0: center_point =(x,y)
              1: description

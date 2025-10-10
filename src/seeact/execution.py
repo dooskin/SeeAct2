@@ -31,7 +31,6 @@ async def execute_task(agent, task: Dict[str, Any], max_steps: int) -> TaskResul
 
     steps = 0
     while not agent.complete_flag and steps < max_steps:
-        print("PRED!!!")
         prediction = await agent.predict()
         if not prediction:
             raise TaskExecutionRetryError(task_id, "Agent failed to predict next action.", context=__name__) # possibly retry task

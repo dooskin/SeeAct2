@@ -228,13 +228,15 @@ async def _run_single_task(
     await sink.write(
         {
             "event": "task_start",
-            "run_id": run_id,
-            "worker_id": worker_id,
-            "task_id": task_id,
-            "website": website,
-            "confirmed_task": confirmed_task,
-            "persona_id": task.get("_persona_id"),
-            "ts": time.time(),
+            "details": {
+                "run_id": run_id,
+                "worker_id": worker_id,
+                "task_id": task_id,
+                "website": website,
+                "confirmed_task": confirmed_task,
+                "persona_id": task.get("_persona_id"),
+                "ts": time.time(),
+            }
         }
     )
 
@@ -251,18 +253,20 @@ async def _run_single_task(
     await sink.write(
         {
             "event": "task_complete",
-            "run_id": run_id,
-            "worker_id": worker_id,
-            "task_id": task_id,
-            "duration_ms": result.duration_ms,
-            "steps": result.steps,
-            "success": result.success,
-            "result": result.result_payload,
-            "persona_id": task.get("_persona_id"),
-            "step_metrics": metrics_summary,
-            "recommendations": task.get("_recommendations_allowed"),
-            "blocked_recommendations": task.get("_recommendations_blocked"),
-            "ts": time.time(),
+            "details": {
+                "run_id": run_id,
+                "worker_id": worker_id,
+                "task_id": task_id,
+                "duration_ms": result.duration_ms,
+                "steps": result.steps,
+                "success": result.success,
+                "result": result.result_payload,
+                "persona_id": task.get("_persona_id"),
+                "step_metrics": metrics_summary,
+                "recommendations": task.get("_recommendations_allowed"),
+                "blocked_recommendations": task.get("_recommendations_blocked"),
+                "ts": time.time(),
+            }
         }
     )
     #except Exception as exc:
@@ -356,13 +360,15 @@ async def _worker_loop(
                     await sink.write(
                         {
                             "event": "task_retry",
-                            "run_id": run_id,
-                            "worker_id": worker_id,
-                            "task_id": task.get("task_id"),
-                            "attempt": attempt,
-                            "delay_sec": delay,
-                            "persona_id": task.get("_persona_id"),
-                            "timestamp": time.time(),
+                            "details": {
+                                "run_id": run_id,
+                                "worker_id": worker_id,
+                                "task_id": task.get("task_id"),
+                                "attempt": attempt,
+                                "delay_sec": delay,
+                                "persona_id": task.get("_persona_id"),
+                                "timestamp": time.time(),
+                            }
                         }
                     )
                     logger.info(f"Retrying task {task.get('task_id')} in {delay:.1f}s (attempt {attempt})")
@@ -371,11 +377,13 @@ async def _worker_loop(
                     await sink.write(
                         {
                             "event": "task_timeout",
-                            "run_id": run_id,
-                            "worker_id": worker_id,
-                            "task_id": task.get("task_id"),
-                            "persona_id": task.get("_persona_id"),
-                            "timestamp": time.time(),
+                            "details": {
+                                "run_id": run_id,
+                                "worker_id": worker_id,
+                                "task_id": task.get("task_id"),
+                                "persona_id": task.get("_persona_id"),
+                                "timestamp": time.time(),
+                            }
                         }
                     )
                     logger.warning(f"Task {task.get('task_id')} timed out after {runner_cfg.task_timeout_sec}s. Abandoning task.")
@@ -384,15 +392,17 @@ async def _worker_loop(
                     await sink.write(
                         {
                             "event": "task_error",
-                            "run_id": run_id,
-                            "worker_id": worker_id,
-                            "task_id": task.get("task_id"),
-                            "error": type(e).__name__,
-                            "message": str(e),
-                            "persona_id": task.get("_persona_id"),
-                            "blocked_recommendations": task.get("_recommendations_blocked"),
-                            "timestamp": time.time(),
-                        }
+                            "details": {
+                                "run_id": run_id,
+                                "worker_id": worker_id,
+                                "task_id": task.get("task_id"),
+                                "error": type(e).__name__,
+                                "message": str(e),
+                                "persona_id": task.get("_persona_id"),
+                                "blocked_recommendations": task.get("_recommendations_blocked"),
+                                "timestamp": time.time(),
+                            }   
+                    }
                     )
                     logger.error(f"Task {task.get('task_id')} failed for other reasons: {e}", exc_info=True)
                     break
@@ -492,15 +502,17 @@ async def run_pool(settings: Dict[str, Any], args: argparse.Namespace, logger: l
     await sink.write(
         {
             "event": "run_start",
-            "run_id": run_id,
-            "concurrency": runner_cfg.concurrency,
-            "num_tasks": enqueued,
-            "config_path": settings.get("__meta", {}).get("config_path"),
-            "profiles": settings.get("__meta", {}).get("profiles"),
-            "timestamp": time.time(),
+            "details" : {
+                "run_id": run_id,
+                "concurrency": runner_cfg.concurrency,
+                "num_tasks": enqueued,
+                "config_path": settings.get("__meta", {}).get("config_path"),
+                "profiles": settings.get("__meta", {}).get("profiles"),
+                "timestamp": time.time(),
+            }
         }
     )
-
+    print(runner_cfg.concurrency)
     max_steps = int(settings.get("agent", {}).get("max_auto_op", settings.get("experiment", {}).get("max_op", 50)))
     workers = [
         asyncio.create_task(_worker_loop(i, queue, runner_cfg, settings, max_steps, sink, run_id))
