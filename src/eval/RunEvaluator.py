@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 from collections import defaultdict
-
+from argparse import ArgumentParser
 # Ensure that each worker's events are well-formed
 REQUIRED_DETAILS = {"action" : ["element", "action", "value", "reason", "worker_id", "timestamp"],
                     "task_start" : ["run_id", "worker_id", "task_id", "website", "confirmed_task", "persona_id", "ts"],
@@ -144,6 +144,12 @@ class RunEvaluator:
 
 # test 
 if __name__ == "__main__":
-    evaluator = RunEvaluator(out_dir=".")
-    metrics = evaluator.evaluate(run_dir="/home/joseph/Public/SeeAct2/online_results/DEMO_RUN_ACTIONS_IDEAL")
+    
+    parser = ArgumentParser(description="Evaluate a SeeAct run from its event logs.")
+    parser.add_argument("--run_dir", type=str, help="Path to the run directory containing metrics.json")
+    parser.add_argument("--out_dir", type=str, default=".", help="Directory to save evaluation results")
+    args = parser.parse_args()
+    
+    evaluator = RunEvaluator(out_dir=args.out_dir)
+    metrics = evaluator.evaluate(run_dir=args.run_dir)
     print(metrics)
