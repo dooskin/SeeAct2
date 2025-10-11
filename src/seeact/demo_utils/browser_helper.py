@@ -518,6 +518,7 @@ _OVERLAY_SELECTORS: List[str] = [
     'button:has-text("Not now")',
     'button:has-text("Dismiss")',
     'button:has-text("Accept")',
+    'button:has-text("x")',
     'button:has-text("Accept All")',
     'button:has-text("Agree")',
     'button:has-text("Allow all")',

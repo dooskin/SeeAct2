@@ -29,12 +29,18 @@ import json
 import logging
 import os
 import random
+import sys
 import traceback
 from datetime import datetime
 from os.path import dirname
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
+
+import playwright
+
+from seeact.Exceptions import TaskExecutionRetryError
+from seeact.runner import JsonlMetricsSink
 
 try:
     import toml  # type: ignore
@@ -113,6 +119,7 @@ class SeeActAgent:
                  model="gpt-4o",
                  temperature=0.9,
                  worker_id: Optional[int] = None,
+                 sink : JsonlMetricsSink = None,
                  ):
 
         try:
@@ -220,8 +227,9 @@ class SeeActAgent:
 
         save_root = Path(self.config["basic"]["save_file_dir"]).resolve()
         save_root.mkdir(parents=True, exist_ok=True)
-        self.main_path = str((save_root / datetime.now().strftime("%Y%m%d_%H%M%S")).resolve())
-        os.makedirs(self.main_path, exist_ok=True)
+        self.main_path = self.config["basic"].get("main_path")
+        #os.makedirs(self.main_path, exist_ok=True)
+        print(f"SeeActAgent_{worker_id}: Saving files to {self.main_path}")
         self.action_space = ["CLICK", "PRESS ENTER", "HOVER", "SCROLL UP", "SCROLL DOWN", "NEW TAB", "CLOSE TAB",
                              "GO BACK", "GO FORWARD",
                              "TERMINATE", "SELECT", "TYPE", "GOTO", "MEMORIZE"]  # Define the list of actions here
@@ -241,22 +249,7 @@ class SeeActAgent:
 
         # Initialize the primary logger and the developer logger
         self.logger = self._setup_logger(redirect_to_dev_log=False)
-        # self.dev_logger = self._setup_dev_logger()
 
-        # # Redirect primary logger messages to dev_logger as well
-        # for handler in self.logger.handlers:
-        #     self.dev_logger.addHandler(handler)
-
-        #try:
-        #    if engine_factory is not None:
-        #        self.engine = engine_factory(**self.config['openai'])
-        #    else:
-        #        self.engine = None
-        #except Exception as e:
-        #    self.logger.error(f"Error initializing prediction engine: {e}")
-            # should probably let it crash here
-            #self.engine = None
-        #    raise e
         self.engine = None
         self.taken_actions = []
 
@@ -288,6 +281,8 @@ class SeeActAgent:
             ]),
         }
         
+        self.sink = sink
+        
 
     @staticmethod
     def _categorize_url(url: str) -> Tuple[bool, bool]:
@@ -312,13 +307,14 @@ class SeeActAgent:
     async def _generate_with_timeout(self, **kwargs):
         """Run self.engine.generate in a thread with a timeout to prevent step stalls."""
         def _call():
-            try:
-                return self.engine.generate(**kwargs)
-            except Exception as e:
-                return f"ELEMENT: Z\nACTION: NONE\nVALUE: None\nERROR: {e}"
-        try:
+            #try:
+            return self.engine.generate(**kwargs)
+            #except Exception as e:
+            #    return f"ELEMENT: Z\nACTION: NONE\nVALUE: None\nERROR: {e}"
+        try:  # TODO: there seems to be an occasional bug where the timeout results in a new instance of the task being created?
             return await asyncio.wait_for(asyncio.to_thread(_call), timeout=self._llm_timeout_sec)
         except asyncio.TimeoutError:
+            self.logger.warning(f"LLM generation timed out after {self._llm_timeout_sec} seconds", exc_info=True)  
             return None
 
     def _task_keywords(self) -> list[str]:
@@ -348,12 +344,9 @@ class SeeActAgent:
         elif self.config["agent"].get("heuristic", True) is not True:
             return None # disabled
         
-        page = self.page
-        url = ""
-        try:
-            url = page.url
-        except Exception:
-            pass
+
+        url = self.page.url # TODO: make sure this isn't none
+
         # Helper to build a prediction dict from a locator
         async def _pred_from_locator(loc, desc, tag="div"):
             return {
@@ -379,7 +372,7 @@ class SeeActAgent:
                 manifest_product = manifest_col.get("product_link")
                 if manifest_product:
                     try:
-                        loc = page.locator(manifest_product).first
+                        loc = self.page.locator(manifest_product).first
                         if await loc.count() > 0 and await loc.is_visible(timeout=1000):
                             self._manifest_step_used = True
                             return await _pred_from_locator(loc, "Open product tile", "a")
@@ -388,15 +381,15 @@ class SeeActAgent:
                 # Build product anchor locator from macro config patterns
                 href_or = " | ".join([f"a[href*='{p}']" for p in self._macro_cfg["product_href_patterns"]])
                 sections = ", ".join(self._macro_cfg["product_section_selectors"])
-                candidates = page.locator(f"{sections} {href_or}")
+                candidates = self.page.locator(f"{sections} {href_or}")
                 count = await candidates.count()
                 if count == 0:
-                    candidates = page.locator(href_or)
+                    candidates = self.page.locator(href_or)
                     count = await candidates.count()
                 if count > 0:
                     # Score by visibility + position + small keyword bias from task
                     best = (0.0, None)
-                    vp = await page.evaluate("() => ({w: window.innerWidth, h: window.innerHeight})")
+                    vp = await self.page.evaluate("() => ({w: window.innerWidth, h: window.innerHeight})")
                     keywords = self._task_keywords()
                     bf = float(self._macro_cfg.get("exclude_regions", {}).get("bottom_fraction", 0.2) or 0.2)
                     tf = float(self._macro_cfg.get("exclude_regions", {}).get("top_fraction", 0.0) or 0.0)
@@ -434,7 +427,7 @@ class SeeActAgent:
         is_pdp = is_pdp_like
         if not is_pdp and not is_collection_like:
             try:
-                if await page.locator('form[action*="/cart/add"]').count() > 0:
+                if await self.page.locator('form[action*="/cart/add"]').count() > 0:
                     is_pdp = True
             except Exception:
                 is_pdp = False
@@ -443,7 +436,7 @@ class SeeActAgent:
             manifest_variant = manifest_pdp.get("variant_widget")
             if manifest_variant:
                 try:
-                    loc = page.locator(manifest_variant).first
+                    loc = self.page.locator(manifest_variant).first
                     if await loc.count() > 0 and await loc.is_visible(timeout=1000):
                         self._manifest_step_used = True
                         return await _pred_from_locator(loc, f"Select variant {manifest_variant}", "button")
@@ -456,7 +449,7 @@ class SeeActAgent:
             ]
             for sel in variant_selectors:
                 try:
-                    loc = page.locator(sel).first
+                    loc = self.page.locator(sel).first
                     if await loc.count() > 0 and await loc.is_visible(timeout=1000):
                         return await _pred_from_locator(loc, f"Select variant {sel}", "button")
                 except Exception:
@@ -465,7 +458,7 @@ class SeeActAgent:
             manifest_atc = manifest_pdp.get("add_to_cart")
             if manifest_atc:
                 try:
-                    loc = page.locator(manifest_atc).first
+                    loc = self.page.locator(manifest_atc).first
                     if await loc.count() > 0 and await loc.is_visible(timeout=1000):
                         self._manifest_step_used = True
                         return await _pred_from_locator(loc, "Add to cart", "button")
@@ -474,7 +467,7 @@ class SeeActAgent:
             atc_selectors = self._macro_cfg["atc_selectors"]
             for sel in atc_selectors:
                 try:
-                    loc = page.locator(sel).first
+                    loc = self.page.locator(sel).first
                     if await loc.count() > 0 and await loc.is_visible(timeout=1000):
                         return await _pred_from_locator(loc, "Add to cart", "button")
                 except Exception:
@@ -483,7 +476,7 @@ class SeeActAgent:
         checkout_sel = None
         try:
             # Prefer drawer dialogs
-            dialog = page.locator('[role="dialog"]').first
+            dialog = self.page.locator('[role="dialog"]').first
             if await dialog.count() > 0:
                 cta = dialog.locator('button:has-text("Checkout"), a[href*="/checkout"]').first
                 if await cta.count() > 0 and await cta.is_visible(timeout=1000):
@@ -498,14 +491,14 @@ class SeeActAgent:
             manifest_checkout = manifest_cart.get("checkout")
             if manifest_checkout:
                 try:
-                    loc = page.locator(manifest_checkout).first
+                    loc = self.page.locator(manifest_checkout).first
                     if await loc.count() > 0 and await loc.is_visible(timeout=1000):
                         self._manifest_step_used = True
                         return await _pred_from_locator(loc, "Checkout", "button")
                 except Exception:
                     pass
             # Prefer clicking a cart icon/link if visible
-            cart_icon = page.locator('a[href*="/cart"], button[aria-label*="cart" i], a[aria-label*="cart" i]').first
+            cart_icon = self.page.locator('a[href*="/cart"], button[aria-label*="cart" i], a[aria-label*="cart" i]').first
             if await cart_icon.count() > 0 and await cart_icon.is_visible(timeout=1000):
                 return await _pred_from_locator(cart_icon, "Open Cart", "a")
             # Build absolute /cart URL based on current origin
@@ -524,14 +517,14 @@ class SeeActAgent:
             # Check for presence of line items before trying checkout
             has_items = False
             try:
-                item_count = await page.locator('form[action*="/cart"] [name="updates[]"], .cart-item, .cart__items').count()
+                item_count = await self.page.locator('form[action*="/cart"] [name="updates[]"], .cart-item, .cart__items').count()
                 has_items = item_count > 0
             except Exception:
                 pass
             if has_items:
                 # Try to adjust quantity to 2 if possible before checkout
                 try:
-                    qty_input = page.locator('form[action*="/cart"] input[name="updates[]"], input[type="number"][name*="update"]').first
+                    qty_input = self.page.locator('form[action*="/cart"] input[name="updates[]"], input[type="number"][name*="update"]').first
                     if await qty_input.count() > 0 and await qty_input.is_visible(timeout=500):
                         return {
                             "action_generation": "",
@@ -549,70 +542,69 @@ class SeeActAgent:
                         }
                 except Exception:
                     pass
-                cart_checkout = page.locator('button:has-text("Checkout"), a[href*="/checkout"]').first
+                cart_checkout = self.page.locator('button:has-text("Checkout"), a[href*="/checkout"]').first
                 if await cart_checkout.count() > 0 and await cart_checkout.is_visible(timeout=1000):
                     return await _pred_from_locator(cart_checkout, "Checkout", "button")
         except Exception:
             pass
+        self.logger.debug("No heuristic macro action applicable")
         # If nothing found, return NO-OP to advance
         return {"action_generation": "", "action_grounding": "", "element": None, "action": "NONE", "value": ""}
 
     async def _maybe_complete_and_extract(self) -> dict | None:
         """Detect a generic completion (e.g., checkout) and extract results. Returns TERMINATE prediction if done."""
-        try:
-            url = self.page.url
-        except Exception:
-            url = ""
+        url = self.page.url or ""
         if not url:
+            self.logger.debug("No URL found in maybe_complete_and_extract")
             return None
         is_checkout = ("/checkout" in url) or ("checkout." in url)
         if not is_checkout:
             return None
         result: dict = {"products": [], "subtotal": None, "total": None, "checkout_url": url}
-        try:
+        #try:
             # Prefer an order summary region if present
-            region = self.page.locator('[aria-label*="order summary" i], section:has-text("Order summary"), aside').first
-            items = []
-            if await region.count() > 0:
-                li = region.locator("li, .product, .line-item, tr")
-                n = min(await li.count(), 5)
+        region = self.page.locator('[aria-label*="order summary" i], section:has-text("Order summary"), aside').first
+        items = []
+        if await region.count() > 0:
+            li = region.locator("li, .product, .line-item, tr")
+            n = min(await li.count(), 5)
+            for i in range(n):
+                node = li.nth(i)
+                #try:
+                txt = (await node.inner_text(timeout=500) or "").strip()
+                if not txt:
+                    continue
+                title = txt.split("\n")[0][:80]
+                m = re.search(r"[×x]\s*(\d+)", txt)
+                qty = int(m.group(1)) if m else 1
+                items.append({"title": title, "qty": qty})
+                #except Exception:
+                    #continue
+            region_text = (await region.inner_text(timeout=800) or "")
+            msub = re.search(r"Subtotal\s*([$€£]\s?[0-9][0-9,.]+)", region_text, re.I)
+            mtot = re.search(r"Total\s*([$€£]\s?[0-9][0-9,.]+)", region_text, re.I)
+            result["subtotal"] = msub.group(1) if msub else None
+            result["total"] = mtot.group(1) if mtot else None
+        if not items:
+            cart_form = self.page.locator('form[action*="/cart"]').first
+            if await cart_form.count() > 0:
+                rows = cart_form.locator(".cart__row, tr, li, .cart-item")
+                n = min(await rows.count(), 5)
                 for i in range(n):
-                    node = li.nth(i)
-                    try:
-                        txt = (await node.inner_text(timeout=500) or "").strip()
-                        if not txt:
-                            continue
-                        title = txt.split("\n")[0][:80]
-                        m = re.search(r"[×x]\s*(\d+)", txt)
-                        qty = int(m.group(1)) if m else 1
-                        items.append({"title": title, "qty": qty})
-                    except Exception:
+                    node = rows.nth(i)
+                    #try:
+                    txt = (await node.inner_text(timeout=500) or "").strip()
+                    if not txt:
                         continue
-                region_text = (await region.inner_text(timeout=800) or "")
-                msub = re.search(r"Subtotal\s*([$€£]\s?[0-9][0-9,.]+)", region_text, re.I)
-                mtot = re.search(r"Total\s*([$€£]\s?[0-9][0-9,.]+)", region_text, re.I)
-                result["subtotal"] = msub.group(1) if msub else None
-                result["total"] = mtot.group(1) if mtot else None
-            if not items:
-                cart_form = self.page.locator('form[action*="/cart"]').first
-                if await cart_form.count() > 0:
-                    rows = cart_form.locator(".cart__row, tr, li, .cart-item")
-                    n = min(await rows.count(), 5)
-                    for i in range(n):
-                        node = rows.nth(i)
-                        try:
-                            txt = (await node.inner_text(timeout=500) or "").strip()
-                            if not txt:
-                                continue
-                            title = txt.split("\n")[0][:80]
-                            m = re.search(r"[×x]\s*(\d+)", txt)
-                            qty = int(m.group(1)) if m else 1
-                            items.append({"title": title, "qty": qty})
-                        except Exception:
-                            continue
-            result["products"] = items
-        except Exception:
-            pass
+                    title = txt.split("\n")[0][:80]
+                    m = re.search(r"[×x]\s*(\d+)", txt)
+                    qty = int(m.group(1)) if m else 1
+                    items.append({"title": title, "qty": qty})
+                    #except Exception:
+                    #    continue
+        result["products"] = items
+        #except Exception:
+        #    pass
         self.final_result = result
         self.logger.info(f"Completion detected. Result: {json.dumps(result, ensure_ascii=False)}")
         return {"action_generation": "", "action_grounding": "", "element": None, "action": "TERMINATE", "value": "STOP"}
@@ -641,7 +633,7 @@ No Value Operations:
 - NEW TAB: Open a new tab in the browser.
 - GO BACK: Navigate to the previous page in the browser history.
 - GO FORWARD: Navigate to the next page in the browser history.
-- TERMINATE: End the current task, typically used when the task is considered complete or requires potentially harmful actions.
+- TERMINATE: End the current task, typically used when the task is considered complete or requires potentially harmful actions. Remember to use this action when you think the task is complete.
 - NONE: Indicates that no action is necessary at this stage. Used to skip an action or wait.
 
 With Value Operations:
@@ -661,7 +653,7 @@ To be successful, it is important to follow the following rules:
 4. Unlike humans, for typing (e.g., in text areas, text boxes) and selecting (e.g., from dropdown menus or <select> elements), you should try directly typing the input or selecting the choice, bypassing the need for an initial click. 
 5. You should not attempt to create accounts, log in or do the final submission. 
 6. Terminate when you deem the task complete or if it requires potentially harmful actions.
-7. Do not generate same action as the previous one, try different ways if keep failing
+7. Do not generate same action as the previous one, try different ways if keep failing, you can see your previous actions listed after 'previous_actions:'
 8. When there is a floating banner like ads, login, or survey floating taking more than 30% of the page, close the floating banner to proceed, the close button could look like a x on the right top corner, or choose NO THANKS to close it.
 9. When there is a floating banner on top or bottom of the page like cookie policy taking less than 30% of the page, ignore the banner to proceed.  
 10. After typing text into search or text input area, the next action is normally PRESS ENTER
@@ -670,7 +662,7 @@ To be successful, it is important to follow the following rules:
 ''',
 
             "referring_description": f"""(Reiteration)
-First, reiterate your next target element, its detailed location, and the corresponding operation.
+First, reiterate your next target element, its detailed location, and the corresponding operation. Remember to terminate if you think the task is complete based on your previous actions. Remember buttons can only be clicked, not typed into.
 
 (Multichoice Question)
 Below is a multi-choice question, where the choices are elements in the webpage. All elements are arranged in the order based on their height on the webpage, from top to bottom (and from left to right). This arrangement in addition to the normalized coordinates can be used to locate them. From the screenshot, find out where and what each one is on the webpage, taking into account both their text content and HTML details. Then, determine whether one matches your target element if your action involves an element. Please examine the choices one by one. Choose the matching one. If multiple options match your answer, choose the most likely one by re-examining the screenshot, the choices, and your further reasoning.""",
@@ -763,11 +755,11 @@ To be successful, it is important to follow the following rules:
         if not logger.handlers:  # Avoid adding handlers multiple times
             # Create a file handler for writing logs to a file
             log_filename = f'agent_worker_{self.worker_id}.log'
-            f_handler = logging.FileHandler(os.path.join(self.main_path, log_filename), mode='a')
+            f_handler = logging.FileHandler(os.path.join(self.main_path, log_filename), mode='a', encoding='utf-8')
             f_handler.setLevel(logging.INFO)
 
             # Create a console handler for printing logs to the terminal
-            c_handler = logging.StreamHandler()
+            c_handler = logging.StreamHandler(sys.stdout)
             c_handler.setLevel(logging.INFO)
 
             # Create formatters for file and console handlers
@@ -820,6 +812,16 @@ To be successful, it is important to follow the following rules:
         self.logger.info("Try to reload")
         await page.reload()
 
+    async def restore_page_agent_state(self):
+        if self.config["agent"]["grounding_strategy"] == "text_choice_som":
+            with open(os.path.join(dirname(__file__), "mark_page.js")) as f:
+                mark_page_script = f.read()
+            await self.page.wait_for_load_state("domcontentloaded")
+
+            await self.page.evaluate(mark_page_script)
+            await self.page.evaluate("unmarkPage()")
+            print('cleared previous marks')
+
     async def page_on_open_handler(self, page):
         # Added 'self' to the handler functions to reference the current instance of the class
         page.on("framenavigated", self.page_on_navigation_handler)
@@ -828,12 +830,14 @@ To be successful, it is important to follow the following rules:
         self.page = page
         # Additional event listeners can be added here
         try:
-            if self.config["agent"]["grounding_strategy"] == "text_choice_som":
-                with open(os.path.join(dirname(__file__), "mark_page.js")) as f:
-                    mark_page_script = f.read()
-                await self.session_control['active_page'].evaluate(mark_page_script)
+            await self.restore_page_agent_state()
         except Exception as e:
-            pass
+            if "Execution context was destroyed" in str(e):
+                # Navigation happened again — just skip
+                self.logger.warning("Skipped script injection due to page reload (context destroyed) at page_on_open_handler")
+            else:
+                self.logger.error(f"Failed to set up page scripts: {e}")
+                raise e
 
     async def start(self, headless=None, args=None, website=None):
         if self.engine is None: # TODO: at this point, this probably would never happen
@@ -856,6 +860,7 @@ To be successful, it is important to follow the following rules:
             # Preferred pattern
             self.playwright = await ap.start()
         except Exception:
+            self.logger.error("Failed to start Playwright... trying fallback", exc_info=True)
             try:
                 # Support context manager style stubs
                 async with ap as _pw:
@@ -877,6 +882,7 @@ To be successful, it is important to follow the following rules:
         elif isinstance(headers, list):
             headers_out = headers or None
 
+        '''
         # Resolve Browserbase session if requested
         if provider == "browserbase" and not cdp_url and bb_create is not None:
             # Read project_id and optional api_base
@@ -911,11 +917,13 @@ To be successful, it is important to follow the following rules:
                     #pass
             except Exception as e:
                 raise RuntimeError(f"Failed to create Browserbase session: {e}")
-
+        '''
+        
         if provider in ("cdp", "browserbase") and cdp_url:
             try:
                 self.session_control['browser'] = await self.playwright.chromium.connect_over_cdp(cdp_url, headers=headers_out)
             except Exception:
+                self.logger.warning("CDP connection with dict headers failed... retrying with array format")
                 # Fallback to array of {name,value}
                 headers_array = None
                 if isinstance(headers, dict):
@@ -924,13 +932,13 @@ To be successful, it is important to follow the following rules:
                     headers_array = headers or None
                 self.session_control['browser'] = await self.playwright.chromium.connect_over_cdp(cdp_url, headers=headers_array)
             # Record call for test stubs that expect chromium.calls
-            try:
-                if not hasattr(self.playwright.chromium, "calls"):
-                    setattr(self.playwright.chromium, "calls", [])
-                hdr = headers_out if headers_out is not None else (headers_array if 'headers_array' in locals() else {})
-                self.playwright.chromium.calls.append((cdp_url, hdr or {}))
-            except Exception:
-                pass
+            #try:            
+            if not hasattr(self.playwright.chromium, "calls"):
+                setattr(self.playwright.chromium, "calls", [])
+            hdr = headers_out if headers_out is not None else (headers_array if 'headers_array' in locals() else {})
+            self.playwright.chromium.calls.append((cdp_url, hdr or {}))
+            #except Exception:
+            #    pass
             # Use an existing remote context if available, otherwise create one
             ctx = None
             try:
@@ -952,21 +960,21 @@ To be successful, it is important to follow the following rules:
             self.session_control['context'] = await normal_new_context_async(self.session_control['browser'],
                                                                              viewport=self.config['browser']['viewport'])
 
+        assert self.session_control['context'] is not None
+        assert self.session_control['browser'] is not None
+        
         self.session_control['context'].on("page", self.page_on_open_handler)
         p = await self.session_control['context'].new_page()
         # Ensure viewport emulation is set when connecting over CDP (may default to None)
-        try:
-            if not p.viewport_size:
-                await p.set_viewport_size(self.config['browser']['viewport'])
-        except Exception:
-            pass
+        #try:
+        if not p.viewport_size:
+            await p.set_viewport_size(self.config['browser']['viewport'])
+        #except Exception:
+        #    pass
 
         # Optional crawler_mode: start tracing only when explicitly enabled
-        try:
-            if bool((self.config.get("basic") or {}).get("crawler_mode", False)):
-                await self.session_control['context'].tracing.start(screenshots=True, snapshots=True)
-        except Exception:
-            pass
+        if bool((self.config.get("basic") or {}).get("crawler_mode", False)):
+            await self.session_control['context'].tracing.start(screenshots=True, snapshots=True)
 
         target_url = self.config['basic']['default_website'] if website is None else website
         try:
@@ -1109,43 +1117,51 @@ To be successful, it is important to follow the following rules:
             _url_now = self.page.url
         except Exception:
             _url_now = ""
-        _target_key = f"{action_name}|{element_repr or ''}".strip()
+        _target_key = f"{action_name}|{target_element}".strip()
         if getattr(self, "_last_url", None) is None:
             self._last_url = ""
         if getattr(self, "_last_target_key", None) is None:
             self._last_target_key = ""
         if getattr(self, "_repeat_clicks", None) is None:
-            self._repeat_clicks = 0
-        if _url_now == self._last_url and _target_key and _target_key == self._last_target_key and action_name == "CLICK":
-            self._repeat_clicks += 1
+            self._repeat_actions = 0
+        if _url_now == self._last_url and _target_key and _target_key == self._last_target_key:
+            self._repeat_actions += 1
         else:
-            self._repeat_clicks = 0
-        if self._repeat_clicks >= 1 and action_name == "CLICK":
+            self._repeat_actions = 0
+        if self._repeat_actions >= 1:
             # If we've already nudged once and still repeating, escalate to macro fallback
-            if self._repeat_clicks >= 2:
-                try:
-                    macro_pred = await self._macro_next_action()
-                    # Execute macro action immediately to break the loop
-                    exec_msg = await self.perform_action(
-                        target_element=macro_pred.get("element"),
-                        action_name=macro_pred.get("action"),
-                        value=macro_pred.get("value"),
-                        target_coordinates=None,
-                        element_repr=(macro_pred.get("element") or {}).get("description") if macro_pred.get("element") else None,
-                    )
-                    return exec_msg
-                except Exception as _e:
-                    pass
+            # TODO: Removed the macro fallback; consider adding a prompt-modification fallback instead
+            #if self._repeat_actions >= 2:
+                #try:
+                #macro_pred = await self._macro_next_action()
+                # Execute macro action immediately to break the loop
+                #exec_msg = await self.perform_action(
+                #    target_element=macro_pred.get("element"),
+                #    action_name=macro_pred.get("action"),
+                #    value=macro_pred.get("value"),
+                #    target_coordinates=None,
+                #    element_repr=(macro_pred.get("element") or {}).get("description") if macro_pred.get("element") else None,
+                #)
+                #return exec_msg
             # Otherwise, do a nudge scroll and rescan next step
-            try:
-                await self.page.evaluate("window.scrollBy(0, Math.min(window.innerHeight * 0.6, 600));")
-            except Exception:
-                pass
-            auto_msg = f"Auto-nudge: suppressed repeat of {action_name} {element_repr}; scrolled"
+            self.logger.info(f"Detected repeat of {action_name} on {self._last_url}; performing auto-nudge scroll")
+            await self.page.evaluate("window.scrollBy(0, Math.min(window.innerHeight * 0.6, 600));")
+            await self.sink.write({
+                "event" : "action",
+                "details": {
+                    "element": None,
+                    "action": "SCROLL DOWN",
+                    "value": None,
+                    "reason": "repeat_nudge",
+                    "worker_id": self.worker_id,
+                    "timestamp": time.time()
+                }
+            })
+            auto_msg = f"Auto-nudge: suppressed repeat of {action_name} {element_repr}| SCROLL DOWN"
             self.taken_actions.append(auto_msg)
             # Update guard state and return without executing the repeated action
             self._last_url = _url_now
-            self._last_target_key = _target_key
+            self._last_target_key = "SCROLL DOWN|"
             return auto_msg
 
         if self.config["agent"]["grounding_strategy"] == "pixel_2_stage":
@@ -1156,16 +1172,15 @@ To be successful, it is important to follow the following rules:
         else:
             selector = None
 
-
         page = self.page
-
+        element_str = repr(element_repr) if element_repr else "N/A"
         if action_name == "CLICK" and selector:
             if selector == "pixel_coordinates":
                 delay = random.randint(50, 150)
                 await self.page.mouse.click(round(target_coordinates["x"]), round(target_coordinates["y"]), delay=delay)
             else:
                 await selector.click(timeout=2000)
-                self.logger.info(f"Clicked on element: {element_repr}")
+                self.logger.info(f"Clicked on element: {element_str}")
         elif action_name == "HOVER" and selector:
 
             if selector == "pixel_coordinates":
@@ -1173,9 +1188,7 @@ To be successful, it is important to follow the following rules:
                 await self.page.mouse.hover(round(target_coordinates["x"]), round(target_coordinates["y"]), delay=delay)
             else:
                 await selector.hover(timeout=2000)
-                self.logger.info(f"Hovered over element: {element_repr}")
-
-
+                self.logger.info(f"Hovered over element: {element_str}")
 
         elif action_name == "TYPE" and selector:
 
@@ -1189,7 +1202,7 @@ To be successful, it is important to follow the following rules:
                 await self.page.keyboard.type(value)
             else:
                 await selector.fill(value)
-                self.logger.info(f"Typed '{value}' into element: {element_repr}")
+                self.logger.info(f"Typed '{value}' into element: {element_str}")
 
         elif action_name == "SCROLL UP":
             await page.evaluate(f"window.scrollBy(0, -{self.config['browser']['viewport']['height'] // 2});")
@@ -1211,6 +1224,7 @@ To be successful, it is important to follow the following rules:
             self.logger.info("Pressed PageDown key")
         elif action_name == "NEW TAB":
             new_page = await self.session_control['context'].new_page()
+            self.session_control['active_page'] = new_page  # TODO: why was this not here originally?
             # self.session_control['pages'].append(new_page)
             self.logger.info("Opened a new tab")
         elif action_name == "CLOSE TAB":
@@ -1231,7 +1245,7 @@ To be successful, it is important to follow the following rules:
                     origin = f"{cur.scheme}://{cur.netloc}" if cur.scheme and cur.netloc else ""
                     value = origin + str(value)
             except Exception:
-                pass
+                self.logger.warning("Failed to parse current URL for GOTO normalization: "+ str(page.url))
             await page.goto(value, wait_until="domcontentloaded")
             self.logger.info(f"Navigated to {value}")
         elif action_name == "PRESS ENTER" and selector:
@@ -1239,13 +1253,13 @@ To be successful, it is important to follow the following rules:
                 delay = random.randint(50, 150)
                 await self.page.mouse.click(round(target_coordinates["x"]), round(target_coordinates["y"]), delay=delay)
             await selector.press('Enter')
-            self.logger.info(f"Pressed Enter on element: {element_repr}")
+            self.logger.info(f"Pressed Enter on element: {element_str}")
         elif action_name == "PRESS ENTER":
             await page.keyboard.press('Enter')
-            self.logger.info(f"Pressed Enter on element: {element_repr}")
+            self.logger.info(f"Pressed Enter on element: {element_str}")
         elif action_name == "SELECT" and selector:
             await select_option(selector, value)
-            self.logger.info(f"Selected option '{value}' from element: {element_repr}")
+            self.logger.info(f"Selected option '{value}' from element: {element_str}")
         elif action_name == "TERMINATE":
             self.complete_flag = True
             self.logger.info("Task has been marked as complete. Terminating...")
@@ -1256,24 +1270,36 @@ To be successful, it is important to follow the following rules:
         elif action_name in ["MEMORIZE"]:
             self.logger.info(f"Keep {value} to the action history.")
         else:
-            raise Exception(f"Unsupported or improperly specified action: {action_name}")
+            raise NotImplementedError(f"Unsupported or improperly specified action: {action_name}")
         if action_name in self.no_element_op and target_element is None:
             new_action = action_name
         else:
             if selector == "pixel_coordinates":
                 new_action = element_repr + " -> " + action_name
             else:
-                new_action = "[" + target_element['tag_with_role'] + "]" + " "
+                #new_action = "[" + target_element['tag_with_role'] + "]" + " "
+                new_action = ""
                 new_action += target_element['description'] + " -> " + action_name
         if action_name in self.with_value_op:
             new_action += ": " + value
 
+        await self.sink.write({
+            "event" : "action",
+            "details": {
+                "element": f"{repr(target_element['description'])} {repr(selector)}" if target_element else None,
+                "action": action_name,
+                "value": value,
+                "reason": "normal",
+                "worker_id": self.worker_id,
+                "timestamp": time.time()
+            }
+        })    
         # self.dev_logger.info(new_action)
         # Update repeat guard state and append action for runner parity
-        try:
-            self._last_url = self.page.url
-        except Exception:
-            pass
+        #try:
+        self._last_url = self.page.url
+        #except Exception:
+        #    pass
         self._last_target_key = _target_key
         # Runner path calls perform_action directly; ensure actions are recorded
         #try:
@@ -1287,33 +1313,21 @@ To be successful, it is important to follow the following rules:
         """
         Generate a prediction for the next action based on the webpage elements and previous actions.
         """
-
+        
         self.time_step += 1
-
-        try:
-            await self.session_control["active_page"].wait_for_load_state('domcontentloaded')
-        except Exception as e:
-            pass
         # Auto-dismiss overlays (cookie banners, modals) to surface targets
-        try:
-            await auto_dismiss_overlays(self.page, max_clicks=2)
-        except Exception:
-            pass
-
+        await auto_dismiss_overlays(self.page, max_clicks=2)
         # Completion gate: if on checkout (or equivalent), extract results and terminate
-        try:
-            maybe_done = await self._maybe_complete_and_extract()
-            if maybe_done:
-                self.predictions.append(maybe_done)
-                return maybe_done
-        except Exception:
-            pass
+        maybe_done = await self._maybe_complete_and_extract()
+        if maybe_done:
+            self.predictions.append(maybe_done)
+            return maybe_done
+
         scan_t0 = time.time()
         elements = await get_interactive_elements_with_playwright(
             self.page, self.config['browser']['viewport']
         )
         scan_ms = int((time.time() - scan_t0) * 1000)
-
         '''
              0: center_point =(x,y)
              1: description
@@ -1352,17 +1366,16 @@ To be successful, it is important to follow the following rules:
             await self.start_playwright_tracing()
             return prediction
 
-        try:
-            if self.config["agent"]["grounding_strategy"] == "text_choice_som":
+        if self.config["agent"]["grounding_strategy"] == "text_choice_som":
                 with open(os.path.join(dirname(__file__), "mark_page.js")) as f:
                     mark_page_script = f.read()
                 await self.page.evaluate(mark_page_script)
                 await self.page.evaluate("unmarkPage()")
                 await self.page.evaluate("""elements => {
                     return window.som.drawBoxes(elements);
-                    }""", elements)
-        except Exception as e:
-            self.logger.info(f"Mark page script error {e}")
+                }""", elements)
+        #except Exception as e:
+        #    self.logger.info(f"Mark page script error {e}")
 
         # Generate choices for the prompt (batched for parity with demo)
         include_dom = bool((self.config.get("experiment") or {}).get("include_dom_in_choices", False))
@@ -1373,20 +1386,11 @@ To be successful, it is important to follow the following rules:
         if top_k > 0:
             elements = elements[:top_k]
 
-        screenshot_path = None
-        if self._capture_screenshots:
-            screenshot_path = self.screenshot_path
-            try:
-                Path(screenshot_path).parent.mkdir(parents=True, exist_ok=True)
-            except Exception:
-                pass
-            try:
-                await self.page.screenshot(path=screenshot_path)
-            except Exception as e:
-                self.logger.info(f"Failed to take screenshot: {e}")
+        screenshot_path = await self.take_screenshot()
+        #await self.take_screenshot()
 
         terminal_width = 10
-        self.logger.info(f"Step - {self.time_step}\n{'-' * terminal_width}\nAction Generation ➡️")
+        self.logger.info(f"Step - {self.time_step}\n{'-' * terminal_width}\nAction Generation ->")
         self.logger.info("TASK: " + self.tasks[-1])
         self.logger.info("Previous:")
         for action in self.taken_actions:
@@ -1425,9 +1429,11 @@ To be successful, it is important to follow the following rules:
             self.logger.info(f"Found {num_choices} candidate elements on the page.")
             # Heuristic-first: try a macro step immediately if it can make obvious progress
             try:
-                self.logger.info("Trying heuristic macro action before LLM grounding...")
                 macro_pred = await self._macro_next_action()
-                if macro_pred and macro_pred.get("action") not in [None, "", "NONE"]:
+                if macro_pred is None:
+                    pass # macro next action disable
+                elif macro_pred.get("action") not in [None, "", "NONE"]:
+                    self.logger.info("Trying heuristic macro action before LLM grounding...")
                     self.predictions.append(macro_pred)
                     step_metrics_entry["macro_used"] = True
                     step_metrics_entry["manifest_used"] = getattr(self, "_manifest_step_used", False)
@@ -1436,8 +1442,8 @@ To be successful, it is important to follow the following rules:
                 else:
                     self.logger.info("Heuristic macro action did not yield a valid action.")
             except Exception as e:
-                self.logger.info("Heuristic macro action failed", e)
-                pass
+                self.logger.error("Heuristic macro action failed for unknown reasons", e)
+                raise e
             if num_choices == 0:
                 self.logger.warning("No interactive elements found; using fallback macro action, overriding settings.")
                 prediction = await self._macro_next_action(override=True)
@@ -1457,7 +1463,7 @@ To be successful, it is important to follow the following rules:
                 batch = elements[start:end]
                 choices = format_choices(batch, include_dom=include_dom)
                 options = format_options(choices)
-                choice_text = f"Action Grounding ➡️" + "\n" + options
+                choice_text = f"Action Grounding ->" + "\n" + options
                 for line in choice_text.split('\n'):
                     self.logger.info(line)
                 prompt = self.generate_prompt(task=self.tasks[-1], previous=self.taken_actions, choices=choices)
@@ -1470,7 +1476,7 @@ To be successful, it is important to follow the following rules:
                 )
                 llm_ms_total += int((time.time() - t_llm0) * 1000)
                 step_metrics_entry["llm_ms"] = llm_ms_total
-                self.logger.info(f"🤖 Action Grounding Output 🤖")
+                self.logger.info(f"[llm] Action Grounding Output [llm]")
                 if output:
                     for line in output.split('\n'):
                         self.logger.info(line.strip())
@@ -1501,11 +1507,10 @@ To be successful, it is important to follow the following rules:
                 # No actionable choice from batches → use fallback macro
                 self.logger.warning("LLM did not select a valid element from any batch; using fallback macro action.")
                 prediction = await self._macro_next_action(override=True)
+                self.logger.info(f"Fallback macro prediction: {prediction['action']} {prediction.get('element')} {prediction.get('value')}")
                 step_metrics_entry["macro_used"] = True
-            try:
                 self.logger.info(f"metrics: scan_ms={scan_ms} llm_ms={llm_ms_total} macro_used={step_metrics_entry['macro_used']} num_candidates={num_choices}")
-            except Exception:
-                pass
+
             step_metrics_entry["manifest_used"] = getattr(self, "_manifest_step_used", False)
             self._step_metrics.append(step_metrics_entry)
 
@@ -1527,12 +1532,12 @@ To be successful, it is important to follow the following rules:
             self.complete_flag = True
             return
 
-        try:
-            # Clear the marks before action
-            if self.config["agent"]["grounding_strategy"] == "text_choice_som":
-                await self.page.evaluate("unmarkPage()")
-        except Exception as e:
-            pass
+        #try:
+        # Clear the marks before action
+        if self.config["agent"]["grounding_strategy"] == "text_choice_som":
+            await self.page.evaluate("unmarkPage()")
+        #except Exception as e:
+        #    pass
 
         pred_element = prediction_dict["element"]
         pred_action = prediction_dict["action"]
@@ -1569,7 +1574,6 @@ To be successful, it is important to follow the following rules:
             traceback_info = traceback.format_exc()
             error_message = f"Error executing action {pred_action}: {str(e)}"
             print(traceback_info)
-            # exit()
             error_message_with_traceback = f"{error_message}\n\nTraceback:\n{traceback_info}"
 
             self.logger.info(new_action)
@@ -1613,17 +1617,14 @@ To be successful, it is important to follow the following rules:
         saveconfig(self.config, os.path.join(self.main_path, 'config.toml'))
 
         # Close Browserbase session if we created one
-        try:
-            if self._bb_session_id and bb_close is not None and self._bb_api_key:
-                bb_close(self._bb_session_id, self._bb_api_key)  # type: ignore
-        except Exception:
-            pass
+        if self._bb_session_id and bb_close is not None and self._bb_api_key:
+            bb_close(self._bb_session_id, self._bb_api_key)  # type: ignore
+            self.logger.info("Browserbase session closed.")
         # Stop Playwright
-        try:
-            if getattr(self, "playwright", None):
-                await self.playwright.stop()
-        except Exception:
-            pass
+        if getattr(self, "playwright", None):
+            await self.playwright.stop()
+            self.logger.info("Playwright closed.")
+
 
     def clear_action_history(self):
         """
@@ -1665,14 +1666,14 @@ To be successful, it is important to follow the following rules:
         if not self._capture_screenshots:
             return None
         path = self.screenshot_path
-        try:
-            Path(path).parent.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
         try:
             await self.page.screenshot(path=path)
         except Exception as e:
-            self.logger.info(f"Failed to take screenshot: {e}")
+            self.logger.warning(f"Failed to take screenshot: {e}")
+            return None
+        self.logger.debug(f"Screenshot saved to {path}")
+        return path
 
     async def start_playwright_tracing(self):
         await self.session_control['context'].tracing.start_chunk(
@@ -1708,7 +1709,7 @@ To be successful, it is important to follow the following rules:
 
     @property
     def screenshot_path(self):
-        return os.path.join(self.main_path, 'screenshots', f'screen_{self.time_step}.png')
+        return os.path.join(self.main_path, 'screenshots', f'screen_{self.worker_id}_{self.time_step}.png')
 
     @property
     def trace_path(self):

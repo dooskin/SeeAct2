@@ -12,24 +12,39 @@ import requests
 from dotenv import load_dotenv
 import litellm
 import base64
+import logging
 
-EMPTY_API_KEY="Your API KEY Here"
+logger = logging.getLogger(__name__)  # runner module logger
+logger.setLevel(logging.DEBUG)
+#  Add a file handler for the runner logger
+f_handler = logging.FileHandler('inference_engine.log')
+f_handler.setLevel(logging.DEBUG)
+f_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+f_handler.setFormatter(f_format)
+logger.addHandler(f_handler)
+
+# Add a console handler for the runner logger
+c_handler = logging.StreamHandler()
+c_handler.setLevel(logging.INFO)
+# Include logger name in the console output
+c_format = logging.Formatter('inference_engine.py: %(asctime)s - %(name)s - %(levelname)s - %(message)s')
+c_handler.setFormatter(c_format)
+logger.addHandler(c_handler)
+
 
 def load_openai_api_key():
     load_dotenv()
     assert (
-            os.getenv("OPENAI_API_KEY") is not None and
-            os.getenv("OPENAI_API_KEY") != EMPTY_API_KEY
-    ), "must pass on the api_key or set OPENAI_API_KEY in the environment"
+            os.getenv("OPENAI_API_KEY") is not None
+    ), "must set OPENAI_API_KEY in the environment"
     return os.getenv("OPENAI_API_KEY")
 
 
 def load_gemini_api_key():
     load_dotenv()
     assert (
-            os.getenv("GEMINI_API_KEY") is not None and
-            os.getenv("GEMINI_API_KEY") != EMPTY_API_KEY
-    ), "must pass on the api_key or set GEMINI_API_KEY in the environment"
+            os.getenv("GEMINI_API_KEY") is not None
+    ), "must set GEMINI_API_KEY in the environment"
     return os.getenv("GEMINI_API_KEY")
 
 def encode_image(image_path):
@@ -51,17 +66,11 @@ def engine_factory(api_key=None, model=None, **kwargs):
 
     if base_url or model in ["gpt-4-vision-preview", "gpt-4-turbo", "gpt-4o", "gpt-4o-mini"]:
         # Ensure API key is available
-        if api_key and api_key != EMPTY_API_KEY:
-            os.environ["OPENAI_API_KEY"] = api_key
-        else:
-            load_openai_api_key()
+        load_openai_api_key()
         # Pass base_url to engine (client reads env if None)
         return OpenAIEngine(model=model or "openai-compatible", base_url=base_url, **kwargs)
     elif model in ["gemini-1.5-pro-latest", "gemini-1.5-flash"]:
-        if api_key and api_key != EMPTY_API_KEY:
-            os.environ["GEMINI_API_KEY"] = api_key
-        else:
-            load_gemini_api_key()
+        load_gemini_api_key()
         model=f"gemini/{model}"
         return GeminiEngine(model=model, **kwargs)
     elif model == "llava":
@@ -230,7 +239,7 @@ class OpenAIEngine(Engine):
 
     @backoff.on_exception(
         backoff.expo,
-        (APIError, RateLimitError, APIConnectionError),
+        (APIError, RateLimitError, APIConnectionError), logger=logger
     )
     def generate(self, prompt: list = None, max_new_tokens=4096, temperature=None, model=None, image_path=None,
                  ouput_0=None, turn_number=0, image_detail: str = "auto", **kwargs):

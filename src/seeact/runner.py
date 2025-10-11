@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import copy
+from datetime import datetime
 import json
 import logging
 import os
@@ -24,23 +25,9 @@ from seeact.recommendations.gating import gate_recommendations
 from seeact.settings import load_settings, SettingsLoadError
 from seeact.utils.manifest_loader import load_manifest as load_manifest_from_dir, require_manifest_dir
 
+# configured more in main()
 logger = logging.getLogger(__name__)  # runner module logger
 logger.setLevel(logging.DEBUG)
-#  Add a file handler for the runner logger
-f_handler = logging.FileHandler('runner.log')
-f_handler.setLevel(logging.DEBUG)
-f_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-f_handler.setFormatter(f_format)
-logger.addHandler(f_handler)
-
-# Add a console handler for the runner logger
-c_handler = logging.StreamHandler()
-c_handler.setLevel(logging.INFO)
-# Include logger name in the console output
-c_format = logging.Formatter('runner.py: %(asctime)s - %(name)s - %(levelname)s - %(message)s')
-c_handler.setFormatter(c_format)
-logger.addHandler(c_handler)
-
 
 @dataclass
 class RunnerConfig:
@@ -115,9 +102,34 @@ class JsonlMetricsSink:
                 f"[run {record.get('run_id')}] worker={record.get('worker_id')} error task={record.get('task_id')}{suffix} "
                 f"{record.get('error')}: {record.get('message')}"
             )
+        elif ev == "action":
+            details = record.get("details", {})
+            elem = str(details.get("element"))
+            if elem and len(elem) > 60:
+                elem = str(elem)[:57] + "..."
+            reason = details.get("reason", "normal")
+            suffix = f" ({reason})" if reason != "normal" else ""
+            print(
+                f"[action] worker={details.get('worker_id')}{suffix} "
+                f"{details.get('action')} {elem[:10]} {details.get('value') or ''}"
+            )
         elif ev == "run_complete":
             print(f"[run {record.get('run_id')}] complete. metrics={self.path}")
 
+        elif ev == "task_retry":
+            pid = record.get("persona_id")
+            suffix = f" persona={pid}" if pid else ""
+            print(
+                f"[run {record.get('run_id')}] worker={record.get('worker_id')} retry task={record.get('task_id')}{suffix} "
+                f"attempt={record.get('attempt')} delay_sec={record.get('delay_sec'):.1f}"
+            )
+        elif ev == "task_timeout":
+            pid = record.get("persona_id")
+            suffix = f" persona={pid}" if pid else ""
+            print(
+                f"[run {record.get('run_id')}] worker={record.get('worker_id')} timeout task={record.get('task_id')}{suffix} "
+                f"abandoning task"
+            )
 
 def _load_tasks(path: Path) -> List[Dict[str, Any]]:
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -146,26 +158,26 @@ def _load_personas_map(personas_path: Path) -> Dict[str, List[Dict[str, Any]]]:
 
 
 def _site_key_from_url(url: str) -> str:
-    try:
-        parsed = urlparse(url if url.startswith("http") else ("https://" + url))
-        host = (parsed.hostname or "").lower()
-        if host.startswith("www."):
-            host = host[4:]
-        return host.split(".")[0]
-    except Exception:
-        return ""
+    
+    parsed = urlparse(url if url.startswith("http") else ("https://" + url))
+    host = (parsed.hostname or "").lower()
+    if not host:
+        logger.warning(f"Cannot determine site key from URL: {url}")
+        return "unknown"
+    if host.startswith("www."):
+        host = host[4:]
+    return host.split(".")[0]
 
 
 def _domain_from_url(url: str) -> Optional[str]:
-    try:
-        parsed = urlparse(url if url.startswith("http") else ("https://" + url))
-        host = (parsed.hostname or "").lower()
-        if host and host.startswith("www."):
-            host = host[4:]
-        return host
-    except Exception:
-        return None
-
+    parsed = urlparse(url if url.startswith("http") else ("https://" + url))
+    host = (parsed.hostname or "").lower()
+    if not host:
+        logger.warning(f"Cannot determine domain from URL: {url}")
+        return "unknown"
+    if host.startswith("www."):
+        host = host[4:]
+    return host
 
 def _pick_persona(task: Dict[str, Any], personas_map: Optional[Dict[str, List[Dict[str, Any]]]]) -> Optional[Dict[str, Any]]:
     if not personas_map:
@@ -216,29 +228,32 @@ async def _run_single_task(
     await sink.write(
         {
             "event": "task_start",
-            "run_id": run_id,
-            "worker_id": worker_id,
-            "task_id": task_id,
-            "website": website,
-            "confirmed_task": confirmed_task,
-            "persona_id": task.get("_persona_id"),
-            "ts": time.time(),
+            "details": {
+                "run_id": run_id,
+                "worker_id": worker_id,
+                "task_id": task_id,
+                "website": website,
+                "confirmed_task": confirmed_task,
+                "persona_id": task.get("_persona_id"),
+                "ts": time.time(),
+            }
         }
     )
 
     runtime_cfg = task_config.setdefault("runtime", {})
     if shared_session and shared_session.get("cdp_url"):
         runtime_cfg["cdp_url"] = shared_session["cdp_url"]
-    agent = SeeActAgent(config=task_config, worker_id=worker_id)
+    agent = SeeActAgent(config=task_config, worker_id=worker_id, sink=sink)
     payload = dict(task)
     payload.update({"task_id": task_id, "website": website, "confirmed_task": confirmed_task})
 
-    try:
-        result = await execute_task(agent, payload, max_steps=max_steps)
-        metrics_summary = _summarize_step_metrics(result.step_metrics)
-        await sink.write(
-            {
-                "event": "task_complete",
+    #try:
+    result = await execute_task(agent, payload, max_steps=max_steps)
+    metrics_summary = _summarize_step_metrics(result.step_metrics)
+    await sink.write(
+        {
+            "event": "task_complete",
+            "details": {
                 "run_id": run_id,
                 "worker_id": worker_id,
                 "task_id": task_id,
@@ -252,23 +267,25 @@ async def _run_single_task(
                 "blocked_recommendations": task.get("_recommendations_blocked"),
                 "ts": time.time(),
             }
-        )
-    except Exception as exc:
-        await sink.write(
-            {
-                "event": "task_error",
-                "run_id": run_id,
-                "worker_id": worker_id,
-                "task_id": task_id,
-                "error": type(exc).__name__,
-                "message": str(exc),
-                "persona_id": task.get("_persona_id"),
-                "blocked_recommendations": task.get("_recommendations_blocked"),
-                "ts": time.time(),
-            }
-        )
-        raise TaskExecutionRetryError(task_id, str(exc)) from exc
-
+        }
+    )
+    #except Exception as exc:
+    #    await sink.write(
+    #        {
+    #            "event": "task_error",
+    #            "run_id": run_id,
+    #            "worker_id": worker_id,
+    #            "task_id": task_id,
+    #            "error": type(exc).__name__,
+    #            "message": str(exc),
+    #            "persona_id": task.get("_persona_id"),
+    #            "blocked_recommendations": task.get("_recommendations_blocked"),
+    #            "ts": time.time(),
+    #        }
+    #    )
+    #    #raise TaskExecutionRetryError(task_id, str(exc)) from exc
+    #    logger.error(f"Task {task_id} failed with exception: {exc}", exc_info=True)
+    #    raise exc
 
 async def _worker_loop(
     worker_id: int,
@@ -323,21 +340,6 @@ async def _worker_loop(
         if task is None:
             queue.task_done()
             break
-        #if session_error is not None:
-        #    await sink.write(
-        #        {
-        #            "event": "task_error",
-        #            "run_id": run_id,
-        #            "worker_id": worker_id,
-        #            "task_id": task.get("task_id") or "",
-        #            "error": type(session_error).__name__,
-        #            "message": str(session_error),
-        #            "persona_id": task.get("_persona_id"),
-        #            "ts": time.time(),
-        #        }
-        #    )
-        #    queue.task_done()
-        #    continue
         attempt = 0
         while attempt <= runner_cfg.max_retries:
             try:
@@ -349,20 +351,24 @@ async def _worker_loop(
             
             except Exception as e:
                 if isinstance(e, TaskExecutionRetryError):
+                    logger.debug(f"Retryable error details: {e}", exc_info=True)
                     attempt += 1
                     if attempt > runner_cfg.max_retries:
+                        logger.warning(f"Max retries exceeded for task {task.get('task_id')}, abandoning task.")
                         break
                     delay = min(runner_cfg.backoff_base_sec * (2 ** (attempt - 1)), runner_cfg.backoff_max_sec)
                     await sink.write(
                         {
                             "event": "task_retry",
-                            "run_id": run_id,
-                            "worker_id": worker_id,
-                            "task_id": task.get("task_id"),
-                            "attempt": attempt,
-                            "delay_sec": delay,
-                            "persona_id": task.get("_persona_id"),
-                            "ts": time.time(),
+                            "details": {
+                                "run_id": run_id,
+                                "worker_id": worker_id,
+                                "task_id": task.get("task_id"),
+                                "attempt": attempt,
+                                "delay_sec": delay,
+                                "persona_id": task.get("_persona_id"),
+                                "timestamp": time.time(),
+                            }
                         }
                     )
                     logger.info(f"Retrying task {task.get('task_id')} in {delay:.1f}s (attempt {attempt})")
@@ -371,44 +377,48 @@ async def _worker_loop(
                     await sink.write(
                         {
                             "event": "task_timeout",
-                            "run_id": run_id,
-                            "worker_id": worker_id,
-                            "task_id": task.get("task_id"),
-                            "persona_id": task.get("_persona_id"),
-                            "ts": time.time(),
+                            "details": {
+                                "run_id": run_id,
+                                "worker_id": worker_id,
+                                "task_id": task.get("task_id"),
+                                "persona_id": task.get("_persona_id"),
+                                "timestamp": time.time(),
+                            }
                         }
                     )
                     logger.warning(f"Task {task.get('task_id')} timed out after {runner_cfg.task_timeout_sec}s. Abandoning task.")
-                    queue.task_done() # I think abandoning the task here needs to mark it done
                     break
                 else:
                     await sink.write(
                         {
                             "event": "task_error",
-                            "run_id": run_id,
-                            "worker_id": worker_id,
-                            "task_id": task.get("task_id"),
-                            "error": type(e).__name__,
-                            "message": str(e),
-                            "persona_id": task.get("_persona_id"),
-                            "ts": time.time(),
-                        }
+                            "details": {
+                                "run_id": run_id,
+                                "worker_id": worker_id,
+                                "task_id": task.get("task_id"),
+                                "error": type(e).__name__,
+                                "message": str(e),
+                                "persona_id": task.get("_persona_id"),
+                                "blocked_recommendations": task.get("_recommendations_blocked"),
+                                "timestamp": time.time(),
+                            }   
+                    }
                     )
-                    queue.task_done()
                     logger.error(f"Task {task.get('task_id')} failed for other reasons: {e}", exc_info=True)
-                    raise e
+                    break
         queue.task_done()
     if session_info and close_session_fn and session_info.get("session_id") and session_info.get("api_key"):
         try:
             close_session_fn(session_info["session_id"], session_info["api_key"], api_base=session_info.get("api_base"))
-        except Exception:
+        except Exception as e:
             logger.warning("Failed to close Browserbase session", exc_info=True)
-            pass
+            raise e
 
 
 def _build_runner_config(settings: Dict[str, Any], args: argparse.Namespace) -> RunnerConfig:
     runner_cfg = settings.get("runner", {}) or {}
-    metrics_dir = Path(args.metrics_dir).resolve() if args.metrics_dir else Path(runner_cfg.get("metrics_dir", "runs")).resolve()
+    #metrics_dir = Path(args.metrics_dir).resolve() if args.metrics_dir else Path(runner_cfg.get("metrics_dir", "runs")).resolve()
+    metrics_dir = Path(args.metrics_dir).resolve() if args.metrics_dir else Path(runner_cfg.get("metrics_dir", "../online_results")).resolve()
     personas_path = None
     if args.personas:
         personas_path = Path(args.personas).resolve()
@@ -433,7 +443,7 @@ def _build_runner_config(settings: Dict[str, Any], args: argparse.Namespace) -> 
     )
 
 
-async def run_pool(settings: Dict[str, Any], args: argparse.Namespace) -> None:
+async def run_pool(settings: Dict[str, Any], args: argparse.Namespace, logger: logging.Logger) -> None:
     runner_cfg = _build_runner_config(settings, args)
     manifest_dir = require_manifest_dir(runner_cfg.manifest_dir)
     runner_cfg.manifest_dir = manifest_dir
@@ -487,20 +497,22 @@ async def run_pool(settings: Dict[str, Any], args: argparse.Namespace) -> None:
     for _ in range(runner_cfg.concurrency):
         queue.put_nowait(None)
 
-    sink = JsonlMetricsSink(runner_cfg.metrics_dir / f"run_{uuid.uuid4().hex[:12]}", verbose=runner_cfg.verbose)
+    sink = JsonlMetricsSink(runner_cfg.metrics_dir / f"run_{settings['basic']['run_uuid']}", verbose=runner_cfg.verbose)
     run_id = sink.base_dir.name.split("run_")[-1]
     await sink.write(
         {
             "event": "run_start",
-            "run_id": run_id,
-            "concurrency": runner_cfg.concurrency,
-            "num_tasks": enqueued,
-            "config_path": settings.get("__meta", {}).get("config_path"),
-            "profiles": settings.get("__meta", {}).get("profiles"),
-            "ts": time.time(),
+            "details" : {
+                "run_id": run_id,
+                "concurrency": runner_cfg.concurrency,
+                "num_tasks": enqueued,
+                "config_path": settings.get("__meta", {}).get("config_path"),
+                "profiles": settings.get("__meta", {}).get("profiles"),
+                "timestamp": time.time(),
+            }
         }
     )
-
+    print(runner_cfg.concurrency)
     max_steps = int(settings.get("agent", {}).get("max_auto_op", settings.get("experiment", {}).get("max_op", 50)))
     workers = [
         asyncio.create_task(_worker_loop(i, queue, runner_cfg, settings, max_steps, sink, run_id))
@@ -524,19 +536,46 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    logger.info("Starting SeeAct runner")
+    run_uuid = uuid.uuid4().hex[:10]
+    
     parser = build_arg_parser()
     args = parser.parse_args(argv)
     try:
         settings, _ = load_settings(
             config_path=Path(args.config).resolve() if args.config else None,
             profiles=args.profile or [],
-            logger=logger
+            #logger=print
         )
     except SettingsLoadError as exc:
         parser.error(str(exc))
         return 1
-    asyncio.run(run_pool(settings, args))
+    settings['basic']['run_uuid'] = run_uuid
+    
+    save_root = Path(settings["basic"]["save_file_dir"]).resolve()
+    save_root.mkdir(parents=True, exist_ok=True)
+    main_path = str((save_root / f"logs_{run_uuid}").resolve())
+    # add uuid to main_path to avoid overwriting
+    
+    os.makedirs(main_path, exist_ok=True)
+
+    #  Add a file handler for the runner logger
+    f_handler = logging.FileHandler(f'{main_path}/runner.log')
+    f_handler.setLevel(logging.DEBUG)
+    f_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    f_handler.setFormatter(f_format)
+    logger.addHandler(f_handler)
+    # Add a console handler for the runner logger
+    c_handler = logging.StreamHandler()
+    c_handler.setLevel(logging.INFO)
+    # Include logger name in the console output
+    c_format = logging.Formatter('runner.py: %(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    c_handler.setFormatter(c_format)
+    logger.addHandler(c_handler)  
+    logger.info("Starting SeeAct runner with uuid %s", run_uuid)
+    logger.info(f"Saving run files and logs to {main_path}")
+    settings['basic']['main_path'] = main_path
+    
+    asyncio.run(run_pool(settings, args, logger))
     return 0
 
 

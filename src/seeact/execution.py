@@ -4,6 +4,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+import playwright
+
 from seeact.Exceptions import TaskExecutionRetryError
 
 
@@ -32,15 +34,25 @@ async def execute_task(agent, task: Dict[str, Any], max_steps: int) -> TaskResul
         prediction = await agent.predict()
         if not prediction:
             raise TaskExecutionRetryError(task_id, "Agent failed to predict next action.", context=__name__) # possibly retry task
-        await agent.perform_action(
-            target_element=prediction.get("element"),
-            action_name=prediction.get("action"),
-            value=prediction.get("value"),
-            target_coordinates=prediction.get("target_coordinates"),
-            element_repr=None,
-        )
-        steps += 1
+        
+        try:
+            await agent.perform_action(
+                target_element=prediction.get("element"),
+                action_name=prediction.get("action"),
+                value=prediction.get("value"),
+                target_coordinates=prediction.get("target_coordinates"),
+                element_repr=None,
+            )
+            # sleep to wait for page load if needed
+            await agent.page.wait_for_load_state('networkidle', timeout=2000)
+            await agent.restore_page_agent_state()
+            #await agent.page.wait_for_load_state('domcontentloaded', timeout=2000)
 
+        except playwright.async_api.TimeoutError as e:
+            raise TaskExecutionRetryError(task_id, 
+                                          "Action timed out: " + str(prediction.get("action"))  + " at element " + str(prediction.get("element")), 
+                                          context=__name__) from e
+        steps += 1
     await agent.stop()
     t1 = time.time()
     result_payload = getattr(agent, "final_result", None)

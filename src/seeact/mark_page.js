@@ -18,7 +18,8 @@ const styleTag = document.createElement("style");
 styleTag.textContent = customCSS;
 document.head.append(styleTag);
 
-let labels = [];
+window._som_labels = window._som_labels || [];
+let labels = window._som_labels;
 
 window.som = {}
 
@@ -66,6 +67,7 @@ som.drawBoxes = function(elements) {
     document.body.appendChild(newElement);
     labels.push(newElement);
   })
+  window._som_labels = labels;
 }
 
 window.myApp = {}
@@ -75,12 +77,16 @@ myApp.use = (data) => {
 }
 
 function unmarkPage() {
-  // Unmark page logic
-  for (const label of labels) {
-    document.body.removeChild(label);
+  if (!Array.isArray(window._som_labels)) {
+    window._som_labels = [];
   }
-  labels = [];
+  const labels = window._som_labels;
+  for (const label of labels) {
+    if (label && label.parentNode) label.remove();
+  }
+  labels.length = 0;
 }
+
 
 function markPage() {
   unmarkPage();

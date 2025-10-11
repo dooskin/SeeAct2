@@ -48,7 +48,8 @@ trace.snapshots = true
 trace.sources = true
 
 [runtime]
-provider = "local"
+provider   = "browserbase"
+project_id = "${BROWSERBASE_PROJECT_ID}"
 
 [runner]
 concurrency = 10
