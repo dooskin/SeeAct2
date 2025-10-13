@@ -1,3 +1,6 @@
+# TODO: add more models to enum and make the other engine factories output the special response object
+from dataclasses import dataclass
+from enum import Enum
 import os
 import time
 
@@ -78,6 +81,29 @@ def engine_factory(api_key=None, model=None, **kwargs):
         return OllamaEngine(model=model, **kwargs)
     raise Exception(f"Unsupported model: {model}, currently supported models: \
                     gpt-4-vision-preview, gpt-4-turbo, gpt-4o, , gpt-4o-mini, gemini-1.5-pro-latest, llava")
+
+class OOBLanguageModel(Enum):
+    # This will be used to compute cost of each API call
+    # Open AI
+    GPT4Vision = "gpt-4-vision-preview"
+    GPT4Turbo = "gpt-4-turbo"
+    GPT4o = "gpt-4o"
+    GPT4oMini = "gpt-4o-mini"
+    
+    # Gemini
+    Gemini1_5Pro = "gemini-1.5-pro-latest"
+    Gemini1_5Flash = "gemini-1.5-flash"
+    
+    # llama
+    UNKNOWN = "unknown"
+
+@dataclass
+class SquooshEngineResponse:
+    message: str
+    tokens_prompt: int = -1
+    tokens_completion: int = -1
+    model: OOBLanguageModel = OOBLanguageModel.UNKNOWN
+    includes_image: bool = False
 
 class Engine:
     def __init__(
@@ -283,7 +309,14 @@ class OpenAIEngine(Engine):
                 max_tokens=max_new_tokens if max_new_tokens else 4096,
                 temperature=temperature if temperature else self.temperature,
             )
-            return resp.choices[0].message.content
+            response_ = SquooshEngineResponse(
+                message=resp.choices[0].message.content,
+                tokens_prompt=resp.usage.prompt_tokens,
+                tokens_completion=resp.usage.completion_tokens,
+                model=OOBLanguageModel(self.model) if self.model in OOBLanguageModel._value2member_map_ else None,
+                includes_image=bool(base64_image)
+            )
+            return response_
         else:
             response = litellm.completion(
                 model=model if model else self.model,
@@ -292,7 +325,16 @@ class OpenAIEngine(Engine):
                 temperature=temperature if temperature else self.temperature,
                 **kwargs,
             )
-            return [choice["message"]["content"] for choice in response.choices][0]
+            
+            response_ = SquooshEngineResponse(
+                message=response.choices[0].message.content,
+                tokens_prompt=response.usage.prompt_tokens,
+                tokens_completion=response.usage.completion_tokens,
+                model=OOBLanguageModel(self.model) if self.model in OOBLanguageModel._value2member_map_ else None,
+                includes_image=bool(base64_image)
+            )
+            
+            return response_
 
 
 class OpenaiEngine_MindAct(Engine):

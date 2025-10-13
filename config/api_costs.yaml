@@ -1,0 +1,249 @@
+## LLM API costs
+## Schema:
+## currency: ISO currency code used for numeric prices
+## default_unit: unit used for token pricing (commonly 'per_1k_tokens')
+## models: list of model pricing entries
+##  - id: unique model id (string)
+##    vendor: provider name
+##    description: short human-friendly description
+##    pricing:
+##      prompt: cost (float) for input/prompt tokens in currency per default_unit
+##      completion: cost (float) for output/completion tokens in currency per default_unit
+##      input_image: flat cost (float) for including an input image (optional)
+##      output_image: flat cost (float) for generating an output image (optional)
+##    notes: free text
+## last_updated: YYYY-MM-DD
+
+# SOURCE: https://platform.openai.com/docs/pricing
+
+currency: USD
+per_tokens: 1000
+last_updated: 2025-10-13
+
+models:
+  - id: gpt-4o-mini
+    vendor: openai
+    description: "gpt-4o-mini — lower-cost, multi-purpose model"
+    pricing:
+      prompt: 0.00015      # USD per per_tokens 
+      completion: 0.0006  
+      input_image: 0.00  # USD per input image 
+      output_image: 0.00 # USD per generated image 
+    notes: "It seems like gpt-4o-mini might not charge for the images."
+
+  - id: gpt-5
+    vendor: openai
+    description: "gpt-5"
+    pricing:
+      prompt: 0.00125
+      cached_input: 0.000125
+      completion: 0.01
+
+  - id: gpt-5-mini
+    vendor: openai
+    description: "gpt-5-mini"
+    pricing:
+      prompt: 0.00025
+      cached_input: 0.000025
+      completion: 0.002
+
+  - id: gpt-5-nano
+    vendor: openai
+    description: "gpt-5-nano"
+    pricing:
+      prompt: 0.00005
+      cached_input: 0.000005
+      completion: 0.0004
+
+  - id: gpt-5-chat-latest
+    vendor: openai
+    description: "gpt-5-chat-latest"
+    pricing:
+      prompt: 0.00125
+      cached_input: 0.000125
+      completion: 0.01
+
+  - id: gpt-5-codex
+    vendor: openai
+    description: "gpt-5-codex"
+    pricing:
+      prompt: 0.00125
+      cached_input: 0.000125
+      completion: 0.01
+
+  - id: gpt-5-pro
+    vendor: openai
+    description: "gpt-5-pro"
+    pricing:
+      prompt: 0.015
+      completion: 0.12
+
+  - id: gpt-4.1
+    vendor: openai
+    description: "gpt-4.1"
+    pricing:
+      prompt: 0.002
+      cached_input: 0.0005
+      completion: 0.008
+
+  - id: gpt-4.1-mini
+    vendor: openai
+    description: "gpt-4.1-mini"
+    pricing:
+      prompt: 0.0004
+      cached_input: 0.0001
+      completion: 0.0016
+
+  - id: gpt-4.1-nano
+    vendor: openai
+    description: "gpt-4.1-nano"
+    pricing:
+      prompt: 0.0001
+      cached_input: 0.000025
+      completion: 0.0004
+
+  - id: gpt-4o
+    vendor: openai
+    description: "gpt-4o"
+    pricing:
+      prompt: 0.0025
+      cached_input: 0.00125
+      completion: 0.01
+
+  - id: gpt-4o-2024-05-13
+    vendor: openai
+    description: "gpt-4o-2024-05-13"
+    pricing:
+      prompt: 0.005
+      completion: 0.015
+
+  - id: gpt-realtime
+    vendor: openai
+    description: "gpt-realtime"
+    pricing:
+      prompt: 0.004
+      cached_input: 0.0004
+      completion: 0.016
+
+  - id: gpt-realtime-mini
+    vendor: openai
+    description: "gpt-realtime-mini"
+    pricing:
+      prompt: 0.0006
+      cached_input: 0.00006
+      completion: 0.0024
+
+  - id: gpt-4o-realtime-preview
+    vendor: openai
+    description: "gpt-4o-realtime-preview"
+    pricing:
+      prompt: 0.005
+      cached_input: 0.0025
+      completion: 0.02
+
+  - id: gpt-4o-mini-realtime-preview
+    vendor: openai
+    description: "gpt-4o-mini-realtime-preview"
+    pricing:
+      prompt: 0.0006
+      cached_input: 0.0003
+      completion: 0.0024
+
+  - id: gpt-audio
+    vendor: openai
+    description: "gpt-audio"
+    pricing:
+      prompt: 0.0025
+      completion: 0.01
+
+  - id: gpt-audio-mini
+    vendor: openai
+    description: "gpt-audio-mini"
+    pricing:
+      prompt: 0.0006
+      completion: 0.0024
+
+  - id: gpt-4o-audio-preview
+    vendor: openai
+    description: "gpt-4o-audio-preview"
+    pricing:
+      prompt: 0.0025
+      completion: 0.01
+
+  - id: gpt-4o-mini-audio-preview
+    vendor: openai
+    description: "gpt-4o-mini-audio-preview"
+    pricing:
+      prompt: 0.00015
+      completion: 0.0006
+
+  - id: o1
+    vendor: other
+    description: "o1"
+    pricing:
+      prompt: 0.015
+      cached_input: 0.0075
+      completion: 0.06
+
+  - id: o1-pro
+    vendor: other
+    description: "o1-pro"
+    pricing:
+      prompt: 0.15
+      completion: 0.6
+
+  - id: o3-pro
+    vendor: other
+    description: "o3-pro"
+    pricing:
+      prompt: 0.02
+      completion: 0.08
+
+  - id: o3
+    vendor: other
+    description: "o3"
+    pricing:
+      prompt: 0.002
+      cached_input: 0.0005
+      completion: 0.008
+
+  - id: o3-deep-research
+    vendor: other
+    description: "o3-deep-research"
+    pricing:
+      prompt: 0.01
+      cached_input: 0.0025
+      completion: 0.04
+
+  - id: o4-mini
+    vendor: other
+    description: "o4-mini"
+    pricing:
+      prompt: 0.0011
+      cached_input: 0.000275
+      completion: 0.0044
+
+  - id: o4-mini-deep-research
+    vendor: other
+    description: "o4-mini-deep-research"
+    pricing:
+      prompt: 0.002
+      cached_input: 0.0005
+      completion: 0.008
+
+  - id: o3-mini
+    vendor: other
+    description: "o3-mini"
+    pricing:
+      prompt: 0.0011
+      cached_input: 0.00055
+      completion: 0.0044
+
+  - id: o1-mini
+    vendor: other
+    description: "o1-mini"
+    pricing:
+      prompt: 0.0011
+      cached_input: 0.00055
+      completion: 0.0044
+
