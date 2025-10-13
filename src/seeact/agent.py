@@ -40,6 +40,7 @@ from seeact.data_utils.format_prompt_utils import format_options
 import playwright
 
 from seeact.Exceptions import TaskExecutionRetryError
+from seeact.demo_utils.inference_engine import SquooshEngineResponse
 from seeact.runner import JsonlMetricsSink
 
 try:
@@ -1510,12 +1511,32 @@ To be successful, it is important to follow the following rules:
                 #prompt = self.generate_prompt(task=self.tasks[-1], previous=self.taken_actions, choices=choices)
                 prompt = self._generate_prompts_from_json(choices=choices)
                 t_llm0 = time.time()
-                output = await self._generate_with_timeout(
+                response = await self._generate_with_timeout(
                     prompt=prompt,
                     image_path=screenshot_path,
                     turn_number=1,
                     ouput_0="",
                 )
+                if response is None:
+                    response = SquooshEngineResponse(message=None)
+                elif not isinstance(response, SquooshEngineResponse):
+                    self.logger.warning(f"TEMPORARY (Unimplemented functionality): LLM response is not a SquooshEngineResponse. Fix this in inference_engine.py")
+                    response = SquooshEngineResponse(message=response)
+                    
+                await self.sink.write({
+                    "event" : "api_call",
+                    "details" : {
+                        "model": response.model.name,
+                        "latency_ms": int((time.time() - t_llm0) * 1000),
+                        "worker_id": self.worker_id,
+                        "timestamp": time.time(),
+                        "tokens_prompt": response.tokens_prompt,
+                        "tokens_completion": response.tokens_completion,
+                        "includes_image": response.includes_image if response else False
+                    }})
+
+                    
+                output = response.message
                 llm_ms_total += int((time.time() - t_llm0) * 1000)
                 step_metrics_entry["llm_ms"] = llm_ms_total
                 self.logger.info(f"[llm] Action Grounding Output [llm]")
