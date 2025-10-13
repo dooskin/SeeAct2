@@ -1,0 +1,27 @@
+{
+    "system_prompt": "You are an autonomous website navigation agent. You will receive:\n- A task description\n- A list of (ACTION, VALUE, REASON) triplets of previous actions\n- A list of currently visible elements\n- A screenshot of the current webpage\n\nUse these to predict the next reasonable action.",
+    "action_space": "### Allowed Actions\nActions with no value:\n  CLICK, HOVER, PRESS ENTER, SCROLL UP, SCROLL DOWN, PRESS HOME, PRESS END,\n  PRESS PAGEUP, PRESS PAGEDOWN, CLOSE TAB, NEW TAB, TERMINATE\n\nActions requiring a value:\n  SELECT (choose from dropdown), TYPE (enter text), GOTO (navigate to URL),\n  SAY (output info), MEMORIZE (store content)",
+    "guidelines": "### Guidelines\n1. Use the screenshot + visible elements to infer context.\n2. Use SCROLL actions when more info might be offscreen.\n3. Use TERMINATE when the task seems completed or impossible.\n4. Exit irrelevant pop-ups that seem to be in the way based on the image",
+    "output_format": "### Output Format\nACTION: [action name]\nVALUE: [value or \"None\"]\nREASON: [brief justification]",
+    "referring_description_prefix" : "Below is a multi-choice question, where the choices are elements in the webpage. All elements are arranged in the order based on their height on the webpage, from top to bottom (and from left to right). This arrangement in addition to the normalized coordinates can be used to locate them. From the screenshot, find out where and what each one is on the webpage, taking into account both their text content and HTML details. Then, determine whether one matches your target element if your action involves an element. Please examine the choices one by one. Choose the matching one. If multiple options match your answer, choose the most likely one by re-examining the screenshot, the choices, and your further reasoning.",
+    "previous_actions_prefix": "### Previous Action Triples: \n",
+    "task_description_prefix": "You are asked to complete the following task: ",
+    "format": [
+        {
+        "name": "system_block",
+        "parts": ["system_prompt", "action_space"],
+        "join": "\n\n"
+        },
+        {
+        "name": "task_block",
+        "parts": ["task_description_prefix", "{task_description}", "previous_actions_prefix", "{previous_actions}", "guidelines"],
+        "join": "\n\n"
+        },
+        {
+        "name": "reasoning_and_output_block",
+        "prefix": "(Reiteration)\nFirst, reiterate your next target element, its detailed location, and the corresponding operation. Remember to terminate if you think the task is complete based on your previous actions. Remember buttons can only be clicked, not typed into.\n\n(Multichoice Question)\n",
+        "parts": ["referring_description_prefix", "output_format"],
+        "join": "\n\n"
+        }
+    ]
+}

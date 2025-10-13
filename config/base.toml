@@ -28,6 +28,7 @@ max_auto_op = 50
 max_continuous_no_op = 5
 highlight = false
 heuristic = false
+prompt_file="./config/prompts/prompt_standard.json"
 
 [openai]
 rate_limit = -1
