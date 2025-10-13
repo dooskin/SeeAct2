@@ -36,7 +36,7 @@ from os.path import dirname
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
-
+from seeact.data_utils.format_prompt_utils import format_options
 import playwright
 
 from seeact.Exceptions import TaskExecutionRetryError
@@ -120,6 +120,7 @@ class SeeActAgent:
                  temperature=0.9,
                  worker_id: Optional[int] = None,
                  sink : JsonlMetricsSink = None,
+                 prompt_file: str = "./config/prompts/prompt_standard.json",
                  ):
 
         try:
@@ -148,7 +149,9 @@ class SeeActAgent:
                         "grounding_strategy": grounding_strategy,
                         "max_auto_op": max_auto_op,
                         "max_continuous_no_op": max_continuous_no_op,
-                        "highlight": highlight
+                        "highlight": highlight,
+                        "heuristic": True,
+                        "prompt_file": prompt_file
                     },
                     "openai": {
                         "rate_limit": rate_limit,
@@ -180,6 +183,7 @@ class SeeActAgent:
             agent_cfg.setdefault("max_continuous_no_op", agent_cfg.get("max_continuous_no_op", max_continuous_no_op))
             agent_cfg.setdefault("highlight", agent_cfg.get("highlight", highlight))
             agent_cfg.setdefault("heuristic", agent_cfg.get("heuristic", True))
+            agent_cfg.setdefault("prompt_file", agent_cfg.get("prompt_file", prompt_file))
             self._capture_screenshots = "screenshot" in (agent_cfg.get("input_info") or [])
 
             # Map Playwright section to 'browser' section
@@ -252,10 +256,23 @@ class SeeActAgent:
 
         self.engine = None
         self.taken_actions = []
+        
+        self.prompt_file_data = {}
+        try:
+            prompt_file = agent_cfg.get("prompt_file")
+            with open(prompt_file, "r", encoding="utf-8") as f:
+                self.logger.info(f"Agent using prompt file {prompt_file}")
+                self.prompt_file_data = json.load(f)
+        except FileNotFoundError:
+            self.logger.error(f"Prompt file {prompt_file} not found, agent cannot proceed.")
+            raise
+        
+        assert self.prompt_file_data, "Prompt file data is empty or invalid."
 
-        if self.config["agent"]["grounding_strategy"] == "pixel_2_stage":
-            self.prompts = self._initialize_prompts_pure_vision()
-        self.prompts = self._initialize_prompts()
+        #if self.config["agent"]["grounding_strategy"] == "pixel_2_stage":
+        #    self.prompts = self._initialize_prompts_pure_vision()
+        #self.prompts = self._initialize_prompts()
+        
         self.time_step = 0
         self.valid_op = 0
         self.continuous_no_op = 0
@@ -608,6 +625,30 @@ class SeeActAgent:
         self.final_result = result
         self.logger.info(f"Completion detected. Result: {json.dumps(result, ensure_ascii=False)}")
         return {"action_generation": "", "action_grounding": "", "element": None, "action": "TERMINATE", "value": "STOP"}
+    
+    def _generate_prompts_from_json(self, choices):
+        """Reconstruct the 3-string prompt list exactly as in prompt_ex.txt"""
+        data = self.prompt_file_data
+        prompts = []
+        for block in data["format"]:
+            parts = []
+            for key in block["parts"]:
+                key_parts = key.split(" ") # for example: "task_description_prefix {task_description}"
+                parts_here = []
+                for kp in key_parts:
+                    kp = kp.strip()
+                    if kp == "{task_description}":
+                        parts_here.append(self.tasks[-1])
+                    elif kp == "{previous_actions}":
+                        parts_here.append("\n".join(self.taken_actions) if self.taken_actions else "None")
+                    elif kp == "{choices}":
+                        parts_here.append(format_options(choices))
+                    else:
+                        parts_here.append(data[kp])
+                parts.append("".join(parts_here))
+            text = block.get("prefix", "") + block["join"].join(parts)
+            prompts.append(text)
+        return prompts
 
     def _initialize_prompts(self):
         """Initialize prompt information including dynamic action space."""
@@ -1466,7 +1507,8 @@ To be successful, it is important to follow the following rules:
                 choice_text = f"Action Grounding ->" + "\n" + options
                 for line in choice_text.split('\n'):
                     self.logger.info(line)
-                prompt = self.generate_prompt(task=self.tasks[-1], previous=self.taken_actions, choices=choices)
+                #prompt = self.generate_prompt(task=self.tasks[-1], previous=self.taken_actions, choices=choices)
+                prompt = self._generate_prompts_from_json(choices=choices)
                 t_llm0 = time.time()
                 output = await self._generate_with_timeout(
                     prompt=prompt,
