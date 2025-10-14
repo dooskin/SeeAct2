@@ -42,16 +42,25 @@ async def execute_task(agent, task: Dict[str, Any], max_steps: int) -> TaskResul
                 value=prediction.get("value"),
                 target_coordinates=prediction.get("target_coordinates"),
                 element_repr=None,
+                reason=prediction.get("reason"),
             )
             # sleep to wait for page load if needed
-            await agent.page.wait_for_load_state('networkidle', timeout=2000)
-            await agent.restore_page_agent_state()
+            try:
+                await agent.page.wait_for_load_state('networkidle', timeout=200)
+            except playwright.async_api.TimeoutError:
+                # hopefully itll be ok
+                print("Timeout waiting for networkidle, continuing anyway.")
+                pass
+            try:
+                await agent.restore_page_agent_state()
+            except Exception as e:
+                agent.logger.warning(f"Failed to restore page agent state: {e}")
             #await agent.page.wait_for_load_state('domcontentloaded', timeout=2000)
 
         except playwright.async_api.TimeoutError as e:
             raise TaskExecutionRetryError(task_id, 
                                           "Action timed out: " + str(prediction.get("action"))  + " at element " + str(prediction.get("element")), 
-                                          context=__name__) from e
+                                          context=__name__)
         steps += 1
     await agent.stop()
     t1 = time.time()

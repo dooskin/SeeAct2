@@ -22,14 +22,15 @@ dev_mode = false
 include_dom_in_choices = false
 
 [agent]
-input_info = [""]
+input_info = ["screenshot"]
 max_auto_op = 50
 max_continuous_no_op = 5
 highlight = false
 heuristic = false
-prompt_file="./config/prompts/prompt_reason.json"
+prompt_file="./config/prompts/prompts_justlook.json"
 persist_assistant_context = true
-draw_axes = false
+draw_axes = true
+repeat_guard = false
 
 [openai]
 rate_limit = -1

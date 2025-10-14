@@ -38,7 +38,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 from seeact.data_utils.format_prompt_utils import format_options
 import playwright
-
+from PIL import Image, ImageDraw, ImageFont
 from seeact.Exceptions import TaskExecutionRetryError
 from seeact.demo_utils.inference_engine import SquooshEngineResponse
 from seeact.runner import JsonlMetricsSink
@@ -85,7 +85,6 @@ except Exception:
 
 from .utils.manifest_loader import load_manifest as load_manifest_from_dir, ManifestRecord
 
-
 class SeeActAgent:
     def __init__(self,
                  config_path=None,
@@ -94,7 +93,6 @@ class SeeActAgent:
                  default_task='Find the pdf of the paper "GPT-4V(ision) is a Generalist Web Agent, if Grounded"',
                  default_website="https://www.google.com/",
                  input_info=["screenshot"],
-                 grounding_strategy="text_choice_som",  # [...,'pixel_2_stage']
                  crawler_mode=False,
                  crawler_max_steps=10,
                  max_auto_op=50,
@@ -147,12 +145,14 @@ class SeeActAgent:
                     },
                     "agent": {
                         "input_info": input_info,
-                        "grounding_strategy": grounding_strategy,
                         "max_auto_op": max_auto_op,
                         "max_continuous_no_op": max_continuous_no_op,
                         "highlight": highlight,
                         "heuristic": True,
-                        "prompt_file": prompt_file
+                        "prompt_file": prompt_file,
+                        "draw_axes": False,
+                        "persist_assistant_context": True,
+                        "repeat_guard": True
                     },
                     "openai": {
                         "rate_limit": rate_limit,
@@ -179,12 +179,14 @@ class SeeActAgent:
             # Ensure an 'agent' section exists
             agent_cfg = config.setdefault("agent", {})
             agent_cfg.setdefault("input_info", agent_cfg.get("input_info", ["screenshot"]))
-            agent_cfg.setdefault("grounding_strategy", agent_cfg.get("grounding_strategy", grounding_strategy))
             agent_cfg.setdefault("max_auto_op", agent_cfg.get("max_auto_op", max_auto_op))
             agent_cfg.setdefault("max_continuous_no_op", agent_cfg.get("max_continuous_no_op", max_continuous_no_op))
             agent_cfg.setdefault("highlight", agent_cfg.get("highlight", highlight))
             agent_cfg.setdefault("heuristic", agent_cfg.get("heuristic", True))
             agent_cfg.setdefault("prompt_file", agent_cfg.get("prompt_file", prompt_file))
+            agent_cfg.setdefault("draw_axes", agent_cfg.get("draw_axes", False))
+            agent_cfg.setdefault("persist_assistant_context", agent_cfg.get("persist_assistant_context", True))
+            agent_cfg.setdefault("repeat_guard", agent_cfg.get("repeat_guard", True))
             self._capture_screenshots = "screenshot" in (agent_cfg.get("input_info") or [])
 
             # Map Playwright section to 'browser' section
@@ -299,9 +301,24 @@ class SeeActAgent:
             ]),
         }
         
-        self.sink = sink
+        self.draw_axes = agent_cfg.get("draw_axes", False)
+        self.persist_assistant_context = agent_cfg.get("persist_assistant_context", True)
         
-
+        self.sink = sink
+        if self.persist_assistant_context:
+            # prompt will be constructed as such:
+            # {
+            #   'system': <from prompt file>,
+            #    'user': <choices from this step>,
+            #    'assistant': <model response from this step>
+            #     'user': <next step choices>
+            #    ...
+            #    'user': <full task description + screenshot + current choices>
+            #}
+            #
+            self.logger.info("Persisting prompt context across steps")
+            self._prompt_context = []  # (role, content) tuples
+            
     @staticmethod
     def _categorize_url(url: str) -> Tuple[bool, bool]:
         """Return flags (is_collection_like, is_pdp_like) derived from a URL."""
@@ -326,6 +343,8 @@ class SeeActAgent:
         """Run self.engine.generate in a thread with a timeout to prevent step stalls."""
         def _call():
             #try:
+            if isinstance(kwargs['prompt'][0], dict):
+                return self.engine.generate_from_messages(**kwargs)
             return self.engine.generate(**kwargs)
             #except Exception as e:
             #    return f"ELEMENT: Z\nACTION: NONE\nVALUE: None\nERROR: {e}"
@@ -627,8 +646,47 @@ class SeeActAgent:
         self.logger.info(f"Completion detected. Result: {json.dumps(result, ensure_ascii=False)}")
         return {"action_generation": "", "action_grounding": "", "element": None, "action": "TERMINATE", "value": "STOP"}
     
+    def _generate_prompt_dict_from_json(self, choices):
+        """Construct the message list for use with .generate_from_messages()"""
+        data = self.prompt_file_data
+        prompt = []  # [{"role" : "user|system|assistant", "content": "...."}, ...]
+        choices = format_options(choices)
+        for block in data["format"]:
+            message = {}
+            parts = []
+            for key in block["parts"]:
+                key_parts = key.split(" ") # for example: "task_description_prefix {task_description}"
+                parts_here = []
+                for kp in key_parts:
+                    kp = kp.strip()
+                    if kp == "{task_description}":
+                        parts_here.append(self.tasks[-1])
+                    elif kp == "{previous_actions}":
+                        parts_here.append("\n".join(self.taken_actions) if self.taken_actions else "None")
+                    elif kp == "{choices}":
+                        parts_here.append(choices)
+                    elif kp == "{image}":
+                        parts_here.append("{image}")
+                    else:
+                        parts_here.append(data[kp])
+                parts.append("".join(parts_here))
+            text = block.get("prefix", "") + block["join"].join(parts)
+            message["role"] = block.get("role") 
+            message["content"] = text
+            prompt.append(message)
+        
+        # add previous context after system prompt
+        if self.persist_assistant_context:
+            sys_msg = prompt[0]
+            prompt_context = [{"role": role, "content": content} for role, content in self._prompt_context]
+            prompt = [sys_msg] + prompt_context + prompt[1:]
+            
+            self._prompt_context.append(("user", choices))  # add current choices to context
+            print(self._prompt_context)
+        return prompt
+    
     def _generate_prompts_from_json(self, choices):
-        """Reconstruct the 3-string prompt list exactly as in prompt_ex.txt"""
+        """Construct the 3-string prompt list for use with .generate()"""
         data = self.prompt_file_data
         prompts = []
         for block in data["format"]:
@@ -855,14 +913,13 @@ To be successful, it is important to follow the following rules:
         await page.reload()
 
     async def restore_page_agent_state(self):
-        if self.config["agent"]["grounding_strategy"] == "text_choice_som":
-            with open(os.path.join(dirname(__file__), "mark_page.js")) as f:
-                mark_page_script = f.read()
-            await self.page.wait_for_load_state("domcontentloaded")
-
-            await self.page.evaluate(mark_page_script)
-            await self.page.evaluate("unmarkPage()")
-            print('cleared previous marks')
+        with open(os.path.join(dirname(__file__), "mark_page.js")) as f:
+            mark_page_script = f.read()
+        await self.page.wait_for_load_state("domcontentloaded")
+        
+        await self.page.evaluate(mark_page_script)
+        await self.page.evaluate("unmarkPage()")
+        print('cleared previous marks')
 
     async def page_on_open_handler(self, page):
         # Added 'self' to the handler functions to reference the current instance of the class
@@ -1105,6 +1162,7 @@ To be successful, it is important to follow the following rules:
             return None
         return "Manifest hints:\n- " + "\n- ".join(hints)
 
+    ''' old function, keep for reference for now
     def generate_prompt(self, task=None, previous=None, choices=None):
 
         """Generate a prompt based on the current task, previous actions, and choices."""
@@ -1151,9 +1209,9 @@ To be successful, it is important to follow the following rules:
                                               choices=choices))
 
             return prompt_list
-
+    '''
     async def perform_action(self, target_element=None, action_name=None, value=None, target_coordinates=None,
-                             element_repr=None):
+                             element_repr=None, reason=None):
         # Repeat/no-progress guard: suppress repeated CLICK on the same URL and nudge scroll
         try:
             _url_now = self.page.url
@@ -1170,7 +1228,7 @@ To be successful, it is important to follow the following rules:
             self._repeat_actions += 1
         else:
             self._repeat_actions = 0
-        if self._repeat_actions >= 1:
+        if self._repeat_actions >= 1 and self.config['agent']['repeat_guard']:
             # If we've already nudged once and still repeating, escalate to macro fallback
             # TODO: Removed the macro fallback; consider adding a prompt-modification fallback instead
             #if self._repeat_actions >= 2:
@@ -1206,8 +1264,8 @@ To be successful, it is important to follow the following rules:
             self._last_target_key = "SCROLL DOWN|"
             return auto_msg
 
-        if self.config["agent"]["grounding_strategy"] == "pixel_2_stage":
-            selector = "pixel_coordinates"
+        #if self.config["agent"]["grounding_strategy"] == "pixel_2_stage":
+        #    selector = "pixel_coordinates"
         if target_element is not None:
             selector = target_element['selector']
             element_repr = target_element['description']
@@ -1216,13 +1274,20 @@ To be successful, it is important to follow the following rules:
 
         page = self.page
         element_str = repr(element_repr) if element_repr else "N/A"
-        if action_name == "CLICK" and selector:
+        if action_name == "CLICK" and (selector or value):
             if selector == "pixel_coordinates":
                 delay = random.randint(50, 150)
                 await self.page.mouse.click(round(target_coordinates["x"]), round(target_coordinates["y"]), delay=delay)
             else:
-                await selector.click(timeout=2000)
-                self.logger.info(f"Clicked on element: {element_str}")
+                # if 'value' is (x, y)
+                if isinstance(value, tuple) and len(value) == 2 and all(isinstance(v, (int, float)) for v in value):
+                    # convert to pixel 
+                    delay = random.randint(50, 150)
+                    await self.page.mouse.click(round(value[0]), round(value[1]), delay=delay)
+                    self.logger.info(f"Clicked on element at pixel coordinates: ({value[0]}, {value[1]})")
+                else:
+                    await selector.click(timeout=2500)
+                    self.logger.info(f"Clicked on element: {element_str}")
         elif action_name == "HOVER" and selector:
 
             if selector == "pixel_coordinates":
@@ -1321,7 +1386,7 @@ To be successful, it is important to follow the following rules:
             else:
                 #new_action = "[" + target_element['tag_with_role'] + "]" + " "
                 new_action = ""
-                new_action += target_element['description'] + " -> " + action_name
+                new_action += target_element.get('description', None) + " -> " + action_name if target_element else str(value) + action_name
         if action_name in self.with_value_op:
             new_action += ": " + value
 
@@ -1331,7 +1396,7 @@ To be successful, it is important to follow the following rules:
                 "element": f"{repr(target_element['description'])} {repr(selector)}" if target_element else None,
                 "action": action_name,
                 "value": value,
-                "reason": "normal",
+                "reason": reason,
                 "worker_id": self.worker_id,
                 "timestamp": time.time()
             }
@@ -1358,31 +1423,18 @@ To be successful, it is important to follow the following rules:
         
         self.time_step += 1
         # Auto-dismiss overlays (cookie banners, modals) to surface targets
-        await auto_dismiss_overlays(self.page, max_clicks=2)
+        #await auto_dismiss_overlays(self.page, max_clicks=2)
         # Completion gate: if on checkout (or equivalent), extract results and terminate
-        maybe_done = await self._maybe_complete_and_extract()
-        if maybe_done:
-            self.predictions.append(maybe_done)
-            return maybe_done
+        #maybe_done = await self._maybe_complete_and_extract()
+        #if maybe_done:
+        #    self.predictions.append(maybe_done)
+        #    return maybe_done
+        self.logger.info(f"Step - {self.time_step}\n{'-' * 10}\nAction Generation ->")
+        self.logger.info("TASK: " + self.tasks[-1])
+        self.logger.info("Previous:")
+        for action in self.taken_actions:
+            self.logger.info(action)
 
-        scan_t0 = time.time()
-        elements = await get_interactive_elements_with_playwright(
-            self.page, self.config['browser']['viewport']
-        )
-        scan_ms = int((time.time() - scan_t0) * 1000)
-        '''
-             0: center_point =(x,y)
-             1: description
-             2: tag_with_role: tag_head with role and type # TODO: Consider adding more
-             3. box
-             4. selector
-             5. tag
-             '''
-
-        elements = sorted(elements, key=lambda el: (
-            el["center_point"][1], el["center_point"][0]))  # Sorting by y and then x coordinate
-
-        elements = [{**x, "idx": i, "option": generate_option_name(i)} for i, x in enumerate(elements)]
 
         # In crawler mode, get random link and click on it
         if bool((self.config.get("basic") or {}).get("crawler_mode", False)):
@@ -1407,17 +1459,25 @@ To be successful, it is important to follow the following rules:
             await self.take_screenshot()
             await self.start_playwright_tracing()
             return prediction
+        
+        # Remove any boxes drawn from last step
+        await self.restore_page_agent_state()
 
-        if self.config["agent"]["grounding_strategy"] == "text_choice_som":
-                with open(os.path.join(dirname(__file__), "mark_page.js")) as f:
-                    mark_page_script = f.read()
-                await self.page.evaluate(mark_page_script)
-                await self.page.evaluate("unmarkPage()")
-                await self.page.evaluate("""elements => {
-                    return window.som.drawBoxes(elements);
-                }""", elements)
-        #except Exception as e:
-        #    self.logger.info(f"Mark page script error {e}")
+        
+        scan_t0 = time.time()
+        elements = await get_interactive_elements_with_playwright(
+            self.page, self.config['browser']['viewport']
+        )
+        scan_ms = int((time.time() - scan_t0) * 1000)
+
+        elements = sorted(elements, key=lambda el: (
+            el["center_point"][1], el["center_point"][0]))  # Sorting by y and then x coordinate
+        elements = [{**x, "idx": i, "option": generate_option_name(i)} for i, x in enumerate(elements)]
+        # Visualize candidate elements
+        if elements:
+            await self.page.evaluate("""elements => {
+                return window.som.drawBoxes(elements);
+            }""", elements)
 
         # Generate choices for the prompt (batched for parity with demo)
         include_dom = bool((self.config.get("experiment") or {}).get("include_dom_in_choices", False))
@@ -1428,221 +1488,119 @@ To be successful, it is important to follow the following rules:
         if top_k > 0:
             elements = elements[:top_k]
 
+        # Screenshot will draw axes if specified in config
         screenshot_path = await self.take_screenshot()
-        #await self.take_screenshot()
+        
+        num_choices = len(elements)
+        self.logger.info(f"Found {num_choices} candidate elements on the page.")
+        manifest_selectors = getattr(self, "_manifest_selectors", {}) or {}
+        self._manifest_step_used = False
+        step_metrics_entry = {
+            "scan_ms": scan_ms,
+            "llm_ms": 0,
+            "macro_used": False,
+            "num_candidates": num_choices,
+            "manifest_available": bool(manifest_selectors),
+            "manifest_used": False,
+        }
 
-        terminal_width = 10
-        self.logger.info(f"Step - {self.time_step}\n{'-' * terminal_width}\nAction Generation ->")
-        self.logger.info("TASK: " + self.tasks[-1])
-        self.logger.info("Previous:")
-        for action in self.taken_actions:
-            self.logger.info(action)
-        self.logger.info("-" * terminal_width)
-        self.logger.info("One-turn mode: generating structured decision in a single call.")
-        self.logger.info("-" * terminal_width)
-        self.logger.info(f"Grounding Strategy: {self.config['agent']['grounding_strategy']}")
-        if self.config["agent"]["grounding_strategy"] == "pixel_2_stage":
-            # For pixel mode, keep current behavior minimal (not commonly used here)
-            pred_element_label, pred_action, pred_value = postprocess_action_lmm_pixel("")
-            prediction = {"action_generation": "", "action_grounding": "", "element": None,
-                          "action": pred_action, "value": pred_value, "coordinates": None,
-                          "description": pred_element_label}
-            self._step_metrics.append({
-                "scan_ms": scan_ms,
-                "llm_ms": 0,
-                "macro_used": False,
-                "num_candidates": 0,
-                "manifest_available": bool(getattr(self, "_manifest_selectors", {})),
-                "manifest_used": getattr(self, "_manifest_step_used", False),
-            })
-
+        if dynamic_choice_batch_size > 0:
+            step_length = max(1, int(dynamic_choice_batch_size))
         else:
-            num_choices = len(elements)
-            manifest_selectors = getattr(self, "_manifest_selectors", {}) or {}
-            self._manifest_step_used = False
-            step_metrics_entry = {
-                "scan_ms": scan_ms,
-                "llm_ms": 0,
-                "macro_used": False,
-                "num_candidates": num_choices,
-                "manifest_available": bool(manifest_selectors),
-                "manifest_used": False,
-            }
-            self.logger.info(f"Found {num_choices} candidate elements on the page.")
-            # Heuristic-first: try a macro step immediately if it can make obvious progress
-            try:
-                macro_pred = await self._macro_next_action()
-                if macro_pred is None:
-                    pass # macro next action disable
-                elif macro_pred.get("action") not in [None, "", "NONE"]:
-                    self.logger.info("Trying heuristic macro action before LLM grounding...")
-                    self.predictions.append(macro_pred)
-                    step_metrics_entry["macro_used"] = True
-                    step_metrics_entry["manifest_used"] = getattr(self, "_manifest_step_used", False)
-                    self._step_metrics.append(step_metrics_entry)
-                    return macro_pred
-                else:
-                    self.logger.info("Heuristic macro action did not yield a valid action.")
-            except Exception as e:
-                self.logger.error("Heuristic macro action failed for unknown reasons", e)
-                raise e
-            if num_choices == 0:
-                self.logger.warning("No interactive elements found; using fallback macro action, overriding settings.")
-                prediction = await self._macro_next_action(override=True)
-                self.predictions.append(prediction)
-                step_metrics_entry["macro_used"] = True
-                step_metrics_entry["manifest_used"] = getattr(self, "_manifest_step_used", False)
-                self._step_metrics.append(step_metrics_entry)
-                return prediction
-            if dynamic_choice_batch_size > 0:
-                step_length = max(1, int(dynamic_choice_batch_size))
-            else:
-                step_length = max(1, int(min(num_choices, fixed_choice_batch_size)))
-            prediction = None
-            llm_ms_total = 0
-            for start in range(0, num_choices, step_length):
-                end = min(num_choices, start + step_length)
-                batch = elements[start:end]
-                choices = format_choices(batch, include_dom=include_dom)
-                options = format_options(choices)
-                choice_text = f"Action Grounding ->" + "\n" + options
-                for line in choice_text.split('\n'):
-                    self.logger.info(line)
-                #prompt = self.generate_prompt(task=self.tasks[-1], previous=self.taken_actions, choices=choices)
-                prompt = self._generate_prompts_from_json(choices=choices)
-                t_llm0 = time.time()
-                response = await self._generate_with_timeout(
-                    prompt=prompt,
-                    image_path=screenshot_path,
-                    turn_number=1,
-                    ouput_0="",
-                )
-                if response is None:
-                    response = SquooshEngineResponse(message=None)
-                elif not isinstance(response, SquooshEngineResponse):
-                    self.logger.warning(f"TEMPORARY (Unimplemented functionality): LLM response is not a SquooshEngineResponse. Fix this in inference_engine.py")
-                    response = SquooshEngineResponse(message=response)
-                    
-                await self.sink.write({
-                    "event" : "api_call",
-                    "details" : {
-                        "model": response.model.name,
-                        "latency_ms": int((time.time() - t_llm0) * 1000),
-                        "worker_id": self.worker_id,
-                        "timestamp": time.time(),
-                        "tokens_prompt": response.tokens_prompt,
-                        "tokens_completion": response.tokens_completion,
-                        "includes_image": response.includes_image if response else False
-                    }})
+            step_length = max(1, int(min(num_choices, fixed_choice_batch_size)))
+        prediction = None
+        llm_ms_total = 0
+        for start in range(0, num_choices, step_length):
+            end = min(num_choices, start + step_length)
+            batch = elements[start:end]
+            choices = format_choices(batch, include_dom=include_dom)
+            options = format_options(choices)
+            choice_text = f"Action Grounding ->" + "\n" + options
+            for line in choice_text.split('\n'):
+                self.logger.info(line)
+            #prompt = self.generate_prompt(task=self.tasks[-1], previous=self.taken_actions, choices=choices)
+            #prompt = self._generate_prompts_from_json(choices=choices)
+            prompt = self._generate_prompt_dict_from_json(choices=choices)
+            t_llm0 = time.time()
+            response = await self._generate_with_timeout(
+                prompt=prompt,
+                image_path=screenshot_path,
+                turn_number=1,
+                ouput_0="",
+            )
+            if response is None:
+                response = SquooshEngineResponse(message=None)
+            elif not isinstance(response, SquooshEngineResponse):
+                self.logger.warning(f"TEMPORARY (Unimplemented functionality): LLM response is not a SquooshEngineResponse. Fix this in inference_engine.py")
+                response = SquooshEngineResponse(message=response)
+                
+            await self.sink.write({
+                "event" : "api_call",
+                "details" : {
+                    "model": response.model.name,
+                    "latency_ms": int((time.time() - t_llm0) * 1000),
+                    "worker_id": self.worker_id,
+                    "timestamp": time.time(),
+                    "tokens_prompt": response.tokens_prompt,
+                    "tokens_completion": response.tokens_completion,
+                    "includes_image": response.includes_image if response else False
+                }})
 
-                    
-                output = response.message
-                llm_ms_total += int((time.time() - t_llm0) * 1000)
-                step_metrics_entry["llm_ms"] = llm_ms_total
-                self.logger.info(f"[llm] Action Grounding Output [llm]")
-                if output:
-                    for line in output.split('\n'):
-                        self.logger.info(line.strip())
+            output = response.message
+            
+            if self.persist_assistant_context:
+                self._prompt_context.append(("assistant", output))
+            
+            llm_ms_total += int((time.time() - t_llm0) * 1000)
+            step_metrics_entry["llm_ms"] = llm_ms_total
+            self.logger.info(f"[llm] Action Grounding Output [llm]")
+            if output:
+                for line in output.split('\n'):
+                    self.logger.info(line.strip())
 
-                if not output:
-                    # LLM timed out → use fallback macro for this step
-                    prediction = await self._macro_next_action()
-                    step_metrics_entry["macro_used"] = True
-                    self.logger.info(f"metrics: scan_ms={scan_ms} llm_ms={llm_ms_total} macro_used=true num_candidates={num_choices}")
-                    step_metrics_entry["manifest_used"] = getattr(self, "_manifest_step_used", False)
-                    self._step_metrics.append(step_metrics_entry)
-                    self.predictions.append(prediction)
-                    return prediction
+            if not output:
+                # LLM timed out → use fallback macro for this step
+                raise TaskExecutionRetryError("LLM response was empty or timed out")
 
-                pred_element_label, pred_action, pred_value = postprocess_action_lmm(output)
-                local_idx = get_index_from_option_name(pred_element_label) if len(pred_element_label) in [1, 2] else None
-                if local_idx is not None and 0 <= local_idx < len(batch) and pred_action.strip() in [
-                    "CLICK", "SELECT", "TYPE", "PRESS ENTER", "HOVER", "TERMINATE"]:
-                    pred_element = batch[local_idx]
-                    prediction = {"action_generation": "", "action_grounding": output, "element": pred_element,
-                                  "action": pred_action, "value": pred_value}
-                    break
-                elif pred_action.strip() in ["PRESS ENTER", "TERMINATE"]:
+            pred_element_label, pred_action, pred_value, pred_reason = postprocess_action_lmm(output)
+            local_idx = get_index_from_option_name(pred_element_label) if len(pred_element_label) in [1, 2] else None
+            if local_idx is not None and 0 <= local_idx < len(batch) and pred_action.strip() in [
+                "CLICK", "SELECT", "TYPE", "PRESS ENTER", "HOVER", "TERMINATE"]:
+                pred_element = batch[local_idx]
+                prediction = {"action_generation": "", "action_grounding": output, "element": pred_element,
+                                "action": pred_action, "value": pred_value, "reason": pred_reason}
+                break
+            elif pred_action.strip() in ["PRESS ENTER", "TERMINATE", "SCROLL UP", "SCROLL DOWN",
+                                            "GO BACK", "GO FORWARD", "NEW TAB", "CLOSE TAB", "NONE", "SAY", "MEMORIZE"]:
+                prediction = {"action_generation": "", "action_grounding": output, "element": None,
+                                "action": pred_action, "value": pred_value, "reason": pred_reason}
+                break
+            # if value if (X, Y) format, parse it
+            elif pred_action.strip() == "CLICK" and re.match(r"^\(\s*-?\d+(\.\d+)?\s*,\s*-?\d+(\.\d+)?\s*\)$", str(pred_value).strip()):
+                coords = re.findall(r"-?\d+(\.\d+)?", str(pred_value))
+                if len(coords) == 2:
+                    x, y = float(coords[0]), float(coords[1])
+                    # convert to pixel coordinates
+                    x = x * self.config['browser']['viewport']['width']
+                    y = y * self.config['browser']['viewport']['height']
                     prediction = {"action_generation": "", "action_grounding": output, "element": None,
-                                  "action": pred_action, "value": pred_value}
+                                    "action": pred_action, "value": (x, y), 
+                                    "description": pred_element_label, "reason": pred_reason}
                     break
-            if prediction is None:
-                # No actionable choice from batches → use fallback macro
-                self.logger.warning("LLM did not select a valid element from any batch; using fallback macro action.")
-                prediction = await self._macro_next_action(override=True)
-                self.logger.info(f"Fallback macro prediction: {prediction['action']} {prediction.get('element')} {prediction.get('value')}")
-                step_metrics_entry["macro_used"] = True
-                self.logger.info(f"metrics: scan_ms={scan_ms} llm_ms={llm_ms_total} macro_used={step_metrics_entry['macro_used']} num_candidates={num_choices}")
+        if prediction is None:
+            # No actionable choice from batches → use fallback macro
+            self.logger.warning("LLM did not select a valid element from any batch; using fallback macro action.")
+            prediction = await self._macro_next_action(override=True)
+            self.logger.info(f"Fallback macro prediction: {prediction['action']} {prediction.get('element')} {prediction.get('value')}")
+            step_metrics_entry["macro_used"] = True
+            self.logger.info(f"metrics: scan_ms={scan_ms} llm_ms={llm_ms_total} macro_used={step_metrics_entry['macro_used']} num_candidates={num_choices}")
 
-            step_metrics_entry["manifest_used"] = getattr(self, "_manifest_step_used", False)
-            self._step_metrics.append(step_metrics_entry)
+        step_metrics_entry["manifest_used"] = getattr(self, "_manifest_step_used", False)
+        self._step_metrics.append(step_metrics_entry)
 
         self.predictions.append(prediction)
 
-        # return {"action_generation": output0, "action_grounding": output, "element": pred_element,
-        #         "action": pred_action, "value": pred_value}
-
         return prediction
-
-        # return output0,output,pred_element, pred_action, pred_value
-
-    async def execute(self, prediction_dict):
-        """
-        Execute the predicted action on the webpage.
-        """
-
-        if prediction_dict is None:
-            self.complete_flag = True
-            return
-
-        #try:
-        # Clear the marks before action
-        if self.config["agent"]["grounding_strategy"] == "text_choice_som":
-            await self.page.evaluate("unmarkPage()")
-        #except Exception as e:
-        #    pass
-
-        pred_element = prediction_dict["element"]
-        pred_action = prediction_dict["action"]
-        pred_value = prediction_dict["value"]
-        pred_coordinate = None
-        pred_element_description=None
-        if "description" in prediction_dict:
-            pred_element_description=prediction_dict["description"]
-        if self.config["agent"]["grounding_strategy"] == "pixel_2_stage":
-            pred_coordinate = prediction_dict["coordinates"]
-
-        try:
-            if (pred_action not in self.no_element_op) and pred_element == None:
-                # self.dev_logger.info
-                self.logger.info("DEBUG: WHAT IS PRED ACTION???:" + pred_action)
-                # self.dev_logger.info("DEBUG WHAT IS self.no_element_op???:"+ self.no_element_op)
-                pred_action = "NONE"
-            new_action = await self.perform_action(pred_element, pred_action, pred_value, pred_coordinate,pred_element_description)
-            self.taken_actions.append(new_action)
-            if pred_action != "NONE":
-                self.valid_op += 1
-                self.continuous_no_op = 0
-            else:
-                self.continuous_no_op += 1
-            if bool((self.config.get("basic") or {}).get("crawler_mode", False)):
-                await self.stop_playwright_tracing()
-                await self.save_traces()
-
-            return 0
-        except Exception as e:
-
-            new_action = f"Failed to perform {pred_action} on {pred_element['description']} with value '{pred_value}': {e}"
-
-            traceback_info = traceback.format_exc()
-            error_message = f"Error executing action {pred_action}: {str(e)}"
-            print(traceback_info)
-            error_message_with_traceback = f"{error_message}\n\nTraceback:\n{traceback_info}"
-
-            self.logger.info(new_action)
-            self.taken_actions.append(new_action)
-            self.continuous_no_op += 1
-            return 1
 
     async def stop(self):
 
@@ -1724,7 +1682,6 @@ To be successful, it is important to follow the following rules:
     # ADD no op count and op count, add limit to op
 
     # decompose run to predict and execute.
-
     async def take_screenshot(self):
         if not self._capture_screenshots:
             return None
@@ -1732,6 +1689,23 @@ To be successful, it is important to follow the following rules:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         try:
             await self.page.screenshot(path=path)
+            if self.config['agent']['draw_axes']:
+                # open up that screenshot and add axis labels 0-1 on it
+                with Image.open(path) as img:
+                    draw = ImageDraw.Draw(img)
+                    width, height = img.size
+                    # make the font bigger
+                    # Draw x-axis labels
+                    for i in range(11):
+                        x = i * (width // 10)
+                        draw.text((x, height - 15), f"{i/10:.1f}", fill="red")
+                    # Draw y-axis labels
+                    for i in range(11):
+                        y = i * (height // 10)
+                        # make the font bigger
+                        draw.text((5, y), f"{i/10:.1f}", fill="red")
+                    img.save(path)
+                        
         except Exception as e:
             self.logger.warning(f"Failed to take screenshot: {e}")
             return None
@@ -1759,6 +1733,9 @@ To be successful, it is important to follow the following rules:
         os.makedirs(os.path.join(self.main_path, 'accessibility'), exist_ok=True)
         with open(self.accessibility_tree_path, 'w', encoding='utf-8') as f:
             f.write(json.dumps(accessibility_tree, indent=4))
+    
+    def add_to_prompt_history(self, role, content):
+        self.prompt_context.append((role, content))
 
     @property
     def page(self):
