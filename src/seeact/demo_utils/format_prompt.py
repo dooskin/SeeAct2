@@ -133,7 +133,13 @@ def postprocess_action_lmm(text):
 
     value = re.search(r"VALUE: (.*)$", text, re.MULTILINE)
     value = value.group(1) if value is not None else ""
-    return selected_option, action.strip(), process_string(process_string(value.strip()))
+    
+    reason = "None"
+    if 'REASON:' in text:
+        reason = text.split('REASON:')[1].split('ACTION:')[0].strip()
+        
+    
+    return selected_option, action.strip(), process_string(process_string(value.strip())), reason
 
 
 def format_ranking_input(elements: List[Any], task: str, previous_actions: List[str]) -> List[List[str]]:

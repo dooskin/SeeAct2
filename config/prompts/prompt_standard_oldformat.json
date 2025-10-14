@@ -9,17 +9,17 @@
 
   "format": [
     {
-      "role": "system",
+      "name": "system_block",
       "parts": ["system_prompt", "action_space"],
       "join": "\n\n"
     },
     {
-      "role": "user",
-      "parts": ["task_description_prefix {task_description}", "previous_actions_prefix", "{previous_actions}", "guidelines {image}"],
+      "name": "task_block",
+      "parts": ["task_description_prefix {task_description}", "previous_actions_prefix", "{previous_actions}", "guidelines"],
       "join": "\n\n"
     },
     {
-      "role": "user",
+      "name": "reasoning_and_output_block",
       "prefix": "(Reiteration)\nFirst, reiterate your next target element, its detailed location, and the corresponding operation. Remember to terminate if you think the task is complete based on your previous actions. Remember buttons can only be clicked, not typed into.\n\n(Multichoice Question)\n",
       "parts": ["referring_description_prefix", "{choices}", "output_format"],
       "join": "\n\n"

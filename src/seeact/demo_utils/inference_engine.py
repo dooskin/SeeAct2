@@ -267,6 +267,75 @@ class OpenAIEngine(Engine):
         backoff.expo,
         (APIError, RateLimitError, APIConnectionError), logger=logger
     )
+    def generate_from_messages(self, prompt, max_new_tokens=4096, temperature=None, model=None, 
+                               image_path=None, image_detail : str = 'auto', **kwargs):
+        
+        # Prepare OpenAI chat messages with multimodal content
+        def _mm_text(txt: str):
+            return {"type": "text", "text": txt}
+
+        def _mm_image_b64(b64: str):
+            return {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": image_detail}}
+        
+        for message in prompt:
+            image_content = []
+            if "{image}" in message.get("content", ""):
+                image_content = [_mm_image_b64(encode_image(image_path))] if image_path else []
+                message["content"] = message["content"].replace("{image}", "")
+                
+            message["content"] = [_mm_text(message["content"])] + image_content
+
+        self.current_key_idx = (self.current_key_idx + 1) % len(self.time_slots)
+        start_time = time.time()
+        if (
+                self.request_interval > 0
+                and start_time < self.next_avil_time[self.current_key_idx]
+        ):
+            time.sleep(self.next_avil_time[self.current_key_idx] - start_time)
+
+        print([message['role'] for message in prompt])
+        # Prefer official client; fallback to litellm if client unavailable
+        if self._client is not None:
+            resp = self._client.chat.completions.create(
+                model=model if model else self.model,
+                messages=prompt,  # type: ignore
+                max_tokens=max_new_tokens if max_new_tokens else 4096,
+                temperature=temperature if temperature else self.temperature,
+            )
+            response = SquooshEngineResponse(
+                message=resp.choices[0].message.content,
+                tokens_prompt=resp.usage.prompt_tokens,
+                tokens_completion=resp.usage.completion_tokens,
+                model=OOBLanguageModel(self.model) if self.model in OOBLanguageModel._value2member_map_ else None,
+                includes_image=bool(image_path)
+            )
+            return response
+        else:
+            response = litellm.completion(
+                model=model if model else self.model,
+                messages=prompt,  # type: ignore
+                max_tokens=max_new_tokens if max_new_tokens else 4096,
+                temperature=temperature if temperature else self.temperature,
+                **kwargs,
+            )
+            if self.request_interval > 0:
+                self.next_avil_time[self.current_key_idx] = (
+                        max(start_time, self.next_avil_time[self.current_key_idx])
+                        + self.request_interval
+                )
+            response_ = SquooshEngineResponse(
+                message=response.choices[0].message.content,
+                tokens_prompt=response.usage.prompt_tokens,
+                tokens_completion=response.usage.completion_tokens,
+                model=OOBLanguageModel(self.model) if self.model in OOBLanguageModel._value2member_map_ else None,
+                includes_image=bool(image_path)
+            )
+            return response_
+    
+    @backoff.on_exception(
+        backoff.expo,
+        (APIError, RateLimitError, APIConnectionError), logger=logger
+    )
     def generate(self, prompt: list = None, max_new_tokens=4096, temperature=None, model=None, image_path=None,
                  ouput_0=None, turn_number=0, image_detail: str = "auto", **kwargs):
         self.current_key_idx = (self.current_key_idx + 1) % len(self.time_slots)
@@ -300,6 +369,13 @@ class OpenAIEngine(Engine):
                 {"role": "assistant", "content": [_mm_text(f"\n\n{ouput_0}")]},
                 {"role": "user", "content": [_mm_text(prompt2)]},
             ]
+
+        print({
+            "prompt0": prompt0,
+            "prompt1": prompt1,
+            "ouput_0": ouput_0,
+            "prompt2": prompt2,
+        })
 
         # Prefer official client; fallback to litellm if client unavailable
         if self._client is not None:

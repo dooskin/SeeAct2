@@ -1,27 +1,25 @@
 {
-    "system_prompt": "You are an autonomous website navigation agent. You will receive:\n- A task description\n- A list of (ACTION, VALUE, REASON) triplets of previous actions\n- A list of currently visible elements\n- A screenshot of the current webpage\n\nUse these to predict the next reasonable action.",
-    "action_space": "### Allowed Actions\nActions with no value:\n  CLICK, HOVER, PRESS ENTER, SCROLL UP, SCROLL DOWN, PRESS HOME, PRESS END,\n  PRESS PAGEUP, PRESS PAGEDOWN, CLOSE TAB, NEW TAB, TERMINATE\n\nActions requiring a value:\n  SELECT (choose from dropdown), TYPE (enter text), GOTO (navigate to URL),\n  SAY (output info), MEMORIZE (store content)",
-    "guidelines": "### Guidelines\n1. Use the screenshot + visible elements to infer context.\n2. Use SCROLL actions when more info might be offscreen.\n3. Use TERMINATE when the task seems completed or impossible.\n4. Exit irrelevant pop-ups that seem to be in the way based on the image",
-    "output_format": "### Output Format\nACTION: [action name]\nVALUE: [value or \"None\"]\nREASON: [brief justification]",
+    "system_prompt": "You are an autonomous website navigation agent. You will receive:\n- A task description\n- A list of currently visible elements\n- A screenshot of the current webpage\n\nUse these to predict the next reasonable action. Always use TERMINATE when the task seems complete.",
+    "action_space": "These are your allowed actions: \nActions with no value:\n  CLICK, HOVER, PRESS ENTER, SCROLL UP, SCROLL DOWN, PRESS HOME, PRESS END,\n  PRESS PAGEUP, PRESS PAGEDOWN, CLOSE TAB, NEW TAB, TERMINATE\n\nActions requiring a value:\n  SELECT (choose from dropdown), TYPE (enter text), GOTO (navigate to URL),\n  SAY (output info), MEMORIZE (store content)",
+    "guidelines": "### Guidelines\n1. Use the screenshot + visible elements to infer context.\n2. Use SCROLL actions when more info might be offscreen.\n3. Use TERMINATE when the task seems completed.\n4. Avoid clicking obscured elements based on the screenshot. \n5 With the exception of scrolling, do not repeat the same action consecutively.",
+    "output_format_prefix": "Your response must strictly follow this format. Say nothing else, leave all other reasoning and describe what you see in the image in the reasoning section:\n\n",
+    "output_format": "REASON: [brief justification and plan for next action]\n\nELEMENT: [The uppercase letter of your choice]\n\nACTION: [action name]\n\nVALUE: [value or \"None\"]",
     "referring_description_prefix" : "Below is a multi-choice question, where the choices are elements in the webpage. All elements are arranged in the order based on their height on the webpage, from top to bottom (and from left to right). This arrangement in addition to the normalized coordinates can be used to locate them. From the screenshot, find out where and what each one is on the webpage, taking into account both their text content and HTML details. Then, determine whether one matches your target element if your action involves an element. Please examine the choices one by one. Choose the matching one. If multiple options match your answer, choose the most likely one by re-examining the screenshot, the choices, and your further reasoning.",
-    "previous_actions_prefix": "### Previous Action Triples: \n",
     "task_description_prefix": "You are asked to complete the following task: ",
+    "final_question" : "### Final Question:\nBased on the choices, produce a single next action with value and reason considering a plan for the next step. If you choose 'None of the other options..' try SCROLL DOWN to make it visible. If you think the task is complete, use TERMINATE.",
+    "screenshot_prefix": "### Screenshot:",
+    "choice_prefix":  "If none of these elements match your target element or your target action doesn't involve an element listed, select no element and scroll up or down or click something random to see more. If you see what you are looking for but no option to click, CAREFULLY use the red axis labels to specify a correct position (x, y) normalized to click in the middle of the object, starting from the top-left",
+
     "format": [
         {
-        "name": "system_block",
-        "parts": ["system_prompt", "action_space"],
-        "join": "\n\n"
+        "role": "developer",
+        "parts": ["output_format_prefix", "output_format", "system_prompt", "action_space", "task_description_prefix", "{task_description}", "guidelines"],
+        "join": "\n"
         },
         {
-        "name": "task_block",
-        "parts": ["task_description_prefix", "{task_description}", "previous_actions_prefix", "{previous_actions}", "guidelines"],
-        "join": "\n\n"
-        },
-        {
-        "name": "reasoning_and_output_block",
-        "prefix": "(Reiteration)\nFirst, reiterate your next target element, its detailed location, and the corresponding operation. Remember to terminate if you think the task is complete based on your previous actions. Remember buttons can only be clicked, not typed into.\n\n(Multichoice Question)\n",
-        "parts": ["referring_description_prefix", "output_format"],
-        "join": "\n\n"
+            "role": "user",
+            "parts": ["referring_description_prefix", "choice_prefix", "{choices}", "screenshot_prefix", "{image}", "final_question"],
+            "join": "\n"
         }
     ]
 }

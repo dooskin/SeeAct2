@@ -85,18 +85,18 @@ def generate_new_referring_prompt(referring_description="", element_format="", a
 def format_options(choices):
     option_text = ""
     abcd = ''
-    non_abcd = ''
+    #non_abcd = ''
 
     multi_choice = ''
     for multichoice_idx, choice in enumerate(choices):
         multi_choice += f"{generate_option_name(multichoice_idx)}. {choice}\n"
         abcd += f"{generate_option_name(multichoice_idx)}, "
 
-        non_abcd = generate_option_name(multichoice_idx + 1)
+        #non_abcd = generate_option_name(multichoice_idx + 1)
 
-    multi_choice += f"{non_abcd}. None of the other options match the correct element or the action doesn't involve an element."
+    # += f"{non_abcd}. None of the other options match the correct element or the action doesn't involve an element."
     # option_text += abcd
-    option_text += f"If none of these elements match your target element or your target action doesn't involve an element, please select {non_abcd}.\n"
+    #option_text += f"If none of these elements match your target element or your target action doesn't involve an element listed, select no element and scroll up or down or click something random to see more. If you see what you are looking for but no option to click, CAREFULLY use the red axis labels to specify a correct position (x, y) normalized to click in the middle of the object, starting from the top-left\n"
     option_text += (multi_choice + '\n\n')
     return option_text
 
