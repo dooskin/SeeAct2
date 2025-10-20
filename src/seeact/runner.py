@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -169,6 +170,13 @@ def _site_key_from_url(url: str) -> str:
     return host.split(".")[0]
 
 
+def _safe_task_dirname(task_id: str, index: int) -> str:
+    base = re.sub(r"[^a-zA-Z0-9._-]+", "-", str(task_id or "task")).strip("-_.")
+    if not base:
+        base = "task"
+    return f"{index:03d}_{base[:60]}"
+
+
 def _domain_from_url(url: str) -> Optional[str]:
     parsed = urlparse(url if url.startswith("http") else ("https://" + url))
     host = (parsed.hostname or "").lower()
@@ -220,10 +228,22 @@ async def _run_single_task(
     from seeact.agent import SeeActAgent
 
     task_id = task.get("task_id") or str(uuid.uuid4())
+    task.setdefault("task_id", task_id)
+    queue_index = int(task.get("_queue_idx", 0))
     task_config = copy.deepcopy(config)
     defaults = task_config.get("basic", {})
     website = task.get("website") or task.get("confirmed_website") or task.get("url") or defaults.get("default_website")
     confirmed_task = task.get("confirmed_task") or defaults.get("default_task")
+
+    run_main_path = task_config.get("basic", {}).get("main_path")
+    if run_main_path:
+        run_root = Path(run_main_path)
+        task_dir = run_root / "tasks" / _safe_task_dirname(task_id, queue_index)
+        task_dir.mkdir(parents=True, exist_ok=True)
+        task_config.setdefault("basic", {})["main_path"] = str(task_dir)
+        task["_output_dir"] = str(task_dir)
+    else:
+        task["_output_dir"] = None
 
     await sink.write(
         {
@@ -235,6 +255,7 @@ async def _run_single_task(
                 "website": website,
                 "confirmed_task": confirmed_task,
                 "persona_id": task.get("_persona_id"),
+                "output_dir": task.get("_output_dir"),
                 "ts": time.time(),
             }
         }
@@ -262,6 +283,7 @@ async def _run_single_task(
                 "success": result.success,
                 "result": result.result_payload,
                 "persona_id": task.get("_persona_id"),
+                "output_dir": task.get("_output_dir"),
                 "step_metrics": metrics_summary,
                 "recommendations": task.get("_recommendations_allowed"),
                 "blocked_recommendations": task.get("_recommendations_blocked"),
@@ -367,6 +389,7 @@ async def _worker_loop(
                                 "attempt": attempt,
                                 "delay_sec": delay,
                                 "persona_id": task.get("_persona_id"),
+                                "output_dir": task.get("_output_dir"),
                                 "timestamp": time.time(),
                             }
                         }
@@ -382,6 +405,7 @@ async def _worker_loop(
                                 "worker_id": worker_id,
                                 "task_id": task.get("task_id"),
                                 "persona_id": task.get("_persona_id"),
+                                "output_dir": task.get("_output_dir"),
                                 "timestamp": time.time(),
                             }
                         }
@@ -400,8 +424,9 @@ async def _worker_loop(
                                 "message": str(e),
                                 "persona_id": task.get("_persona_id"),
                                 "blocked_recommendations": task.get("_recommendations_blocked"),
+                                "output_dir": task.get("_output_dir"),
                                 "timestamp": time.time(),
-                            }   
+                            }
                     }
                     )
                     logger.error(f"Task {task.get('task_id')} failed for other reasons: {e}", exc_info=True)
@@ -492,6 +517,8 @@ async def run_pool(settings: Dict[str, Any], args: argparse.Namespace, logger: l
             task = dict(task)
             task["_recommendations_allowed"] = allowed
             task["_recommendations_blocked"] = blocked
+        task = dict(task)
+        task["_queue_idx"] = enqueued
         queue.put_nowait(task)
         enqueued += 1
     for _ in range(runner_cfg.concurrency):

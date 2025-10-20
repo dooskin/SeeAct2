@@ -38,7 +38,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 from seeact.data_utils.format_prompt_utils import format_options
 import playwright
-from PIL import Image, ImageDraw, ImageFont
+# Pillow is only needed when drawing axis overlays on screenshots.
+try:
+    from PIL import Image, ImageDraw, ImageFont  # type: ignore
+except Exception:  # Pillow not installed; proceed without axis overlays
+    Image = ImageDraw = ImageFont = None  # type: ignore
 from seeact.Exceptions import TaskExecutionRetryError
 from seeact.demo_utils.inference_engine import SquooshEngineResponse
 from seeact.runner import JsonlMetricsSink
@@ -237,6 +241,24 @@ class SeeActAgent:
         self.main_path = self.config["basic"].get("main_path")
         #os.makedirs(self.main_path, exist_ok=True)
         print(f"SeeActAgent_{worker_id}: Saving files to {self.main_path}")
+        self._steps_dir: Path | None = None
+        self._transcript_path: Path | None = None
+        self._pending_step_record: dict[str, Any] | None = None
+        if self.main_path:
+            try:
+                main_path_obj = Path(self.main_path)
+                main_path_obj.mkdir(parents=True, exist_ok=True)
+                steps_dir = main_path_obj / "steps"
+                steps_dir.mkdir(parents=True, exist_ok=True)
+                self._steps_dir = steps_dir
+                transcript_path = main_path_obj / "transcript.md"
+                if not transcript_path.exists():
+                    transcript_path.write_text("# Step Transcript\n\n", encoding="utf-8")
+                self._transcript_path = transcript_path
+            except Exception as exc:
+                self.logger.warning(f"Failed to initialise step logging directories: {exc}")
+                self._steps_dir = None
+                self._transcript_path = None
         self.action_space = ["CLICK", "PRESS ENTER", "HOVER", "SCROLL UP", "SCROLL DOWN", "NEW TAB", "CLOSE TAB",
                              "GO BACK", "GO FORWARD",
                              "TERMINATE", "SELECT", "TYPE", "GOTO", "MEMORIZE"]  # Define the list of actions here
@@ -645,7 +667,155 @@ class SeeActAgent:
         self.final_result = result
         self.logger.info(f"Completion detected. Result: {json.dumps(result, ensure_ascii=False)}")
         return {"action_generation": "", "action_grounding": "", "element": None, "action": "TERMINATE", "value": "STOP"}
-    
+
+    def _stage_step_record(
+        self,
+        *,
+        prediction: Dict[str, Any],
+        step_metrics: Dict[str, Any],
+        screenshot_path: Optional[str],
+        llm_output: Optional[str],
+    ) -> None:
+        if not self._steps_dir:
+            return
+        if self._pending_step_record is not None:
+            # Finalise any previous pending record as abandoned
+            self.logger.warning("Pending step record detected; marking previous step as aborted.")
+            try:
+                self._finalize_step_record(status="aborted", post_url=self._safe_page_url(), error=None)
+            except Exception:
+                pass
+        step_index = int(self.time_step)
+        timestamp = time.time()
+        page_url = self._safe_page_url()
+        reason = prediction.get("reason")
+        action_name = prediction.get("action")
+        value = prediction.get("value")
+        if isinstance(value, tuple):
+            value_serializable: Any = list(value)
+        else:
+            value_serializable = value
+        element = prediction.get("element") or {}
+        element_option = element.get("option") if isinstance(element, dict) else None
+        element_info: Dict[str, Any] | None = None
+        if isinstance(element, dict) and element:
+            element_info = {
+                "option": element.get("option"),
+                "idx": element.get("idx"),
+                "description": element.get("description"),
+                "tag": element.get("tag"),
+                "tag_with_role": element.get("tag_with_role"),
+                "center_point": element.get("center_point"),
+                "box": element.get("box"),
+                "box_raw": element.get("box_raw"),
+                "outer_html": element.get("outer_html"),
+            }
+        screenshot_rel = None
+        if screenshot_path and self.main_path:
+            try:
+                screenshot_rel = str(Path(screenshot_path).resolve().relative_to(Path(self.main_path).resolve()))
+            except Exception:
+                screenshot_rel = screenshot_path
+        elif screenshot_path:
+            screenshot_rel = screenshot_path
+        record: Dict[str, Any] = {
+            "step": step_index,
+            "timestamp": timestamp,
+            "page_url_before": page_url,
+            "reason": reason,
+            "action": action_name,
+            "value": value_serializable,
+            "element_option": element_option,
+            "element": element_info,
+            "macro_used": bool(step_metrics.get("macro_used")),
+            "manifest_available": bool(step_metrics.get("manifest_available")),
+            "manifest_used": bool(step_metrics.get("manifest_used")),
+            "metrics": {
+                "scan_ms": step_metrics.get("scan_ms"),
+                "llm_ms": step_metrics.get("llm_ms"),
+                "num_candidates": step_metrics.get("num_candidates"),
+            },
+            "screenshot": screenshot_rel,
+            "llm_output": llm_output,
+            "action_status": "pending",
+        }
+        step_path = self._steps_dir / f"step_{step_index:03d}.json"
+        self._pending_step_record = {
+            "path": step_path,
+            "record": record,
+        }
+
+    def _finalize_step_record(
+        self,
+        *,
+        status: str,
+        post_url: Optional[str],
+        error: Optional[BaseException],
+    ) -> None:
+        info = self._pending_step_record
+        if not info or not self._steps_dir:
+            self._pending_step_record = None
+            return
+        record = info.get("record", {}).copy()
+        record["action_status"] = status
+        record["timestamp_completed"] = time.time()
+        record["page_url_after"] = post_url
+        if error:
+            record["error"] = str(error)
+        self._write_step_record(Path(info["path"]), record)
+        self._write_transcript_entry(record)
+        self._pending_step_record = None
+
+    def _write_step_record(self, path: Path, record: Dict[str, Any]) -> None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("w", encoding="utf-8") as fh:
+                json.dump(record, fh, indent=2, ensure_ascii=False)
+        except Exception as exc:
+            self.logger.warning(f"Failed to write step record {path}: {exc}")
+
+    def _write_transcript_entry(self, record: Dict[str, Any]) -> None:
+        if not self._transcript_path:
+            return
+        lines = [
+            f"## Step {record.get('step')}",
+            f"- Time: {datetime.fromtimestamp(record.get('timestamp', time.time())).isoformat()}",
+        ]
+        if record.get("page_url_before"):
+            lines.append(f"- URL (before): {record['page_url_before']}")
+        if record.get("page_url_after"):
+            lines.append(f"- URL (after): {record['page_url_after']}")
+        if record.get("reason"):
+            lines.append(f"- Reason: {record['reason']}")
+        action_line = f"- Action: {record.get('action')}"
+        if record.get("value") not in (None, "", "None"):
+            action_line += f" (value={record['value']})"
+        element = record.get("element")
+        if isinstance(element, dict) and element.get("description"):
+            opt = element.get("option") or record.get("element_option")
+            if opt:
+                action_line += f" on [{opt}] {element['description']}"
+            else:
+                action_line += f" on {element['description']}"
+        lines.append(action_line)
+        lines.append(f"- Result: {record.get('action_status')}")
+        if record.get("screenshot"):
+            lines.append(f"- Screenshot: {record['screenshot']}")
+        if record.get("error"):
+            lines.append(f"- Error: {record['error']}")
+        lines.append("")
+        try:
+            with self._transcript_path.open("a", encoding="utf-8") as fh:
+                fh.write("\n".join(lines))
+        except Exception as exc:
+            self.logger.warning(f"Failed to append transcript entry: {exc}")
+
+    def _safe_page_url(self) -> Optional[str]:
+        try:
+            return self.page.url
+        except Exception:
+            return None
+
     def _generate_prompt_dict_from_json(self, choices):
         """Construct the message list for use with .generate_from_messages()"""
         data = self.prompt_file_data
@@ -1224,6 +1394,8 @@ To be successful, it is important to follow the following rules:
             self._last_target_key = ""
         if getattr(self, "_repeat_clicks", None) is None:
             self._repeat_actions = 0
+        step_info = getattr(self, "_pending_step_record", None)
+        action_error: Optional[BaseException] = None
         if _url_now == self._last_url and _target_key and _target_key == self._last_target_key:
             self._repeat_actions += 1
         else:
@@ -1262,158 +1434,187 @@ To be successful, it is important to follow the following rules:
             # Update guard state and return without executing the repeated action
             self._last_url = _url_now
             self._last_target_key = "SCROLL DOWN|"
+            if step_info:
+                self._finalize_step_record(
+                    status="auto_nudge",
+                    post_url=self._safe_page_url(),
+                    error=None,
+                )
             return auto_msg
 
-        #if self.config["agent"]["grounding_strategy"] == "pixel_2_stage":
-        #    selector = "pixel_coordinates"
-        if target_element is not None:
-            selector = target_element['selector']
-            element_repr = target_element['description']
-        else:
-            selector = None
-
-        page = self.page
-        element_str = repr(element_repr) if element_repr else "N/A"
-        if action_name == "CLICK" and (selector or value):
-            if selector == "pixel_coordinates":
-                delay = random.randint(50, 150)
-                await self.page.mouse.click(round(target_coordinates["x"]), round(target_coordinates["y"]), delay=delay)
+        try:
+            #if self.config["agent"]["grounding_strategy"] == "pixel_2_stage":
+            #    selector = "pixel_coordinates"
+            if target_element is not None:
+                selector = target_element['selector']
+                element_repr = target_element['description']
             else:
-                # if 'value' is (x, y)
-                if isinstance(value, tuple) and len(value) == 2 and all(isinstance(v, (int, float)) for v in value):
-                    # convert to pixel 
+                selector = None
+
+            page = self.page
+            element_str = repr(element_repr) if element_repr else "N/A"
+            if action_name == "CLICK" and (selector or value):
+                if selector == "pixel_coordinates":
                     delay = random.randint(50, 150)
-                    await self.page.mouse.click(round(value[0]), round(value[1]), delay=delay)
-                    self.logger.info(f"Clicked on element at pixel coordinates: ({value[0]}, {value[1]})")
+                    await self.page.mouse.click(round(target_coordinates["x"]), round(target_coordinates["y"]), delay=delay)
                 else:
-                    await selector.click(timeout=2500)
-                    self.logger.info(f"Clicked on element: {element_str}")
-        elif action_name == "HOVER" and selector:
+                    # if 'value' is (x, y)
+                    if isinstance(value, tuple) and len(value) == 2 and all(isinstance(v, (int, float)) for v in value):
+                        # convert to pixel 
+                        delay = random.randint(50, 150)
+                        await self.page.mouse.click(round(value[0]), round(value[1]), delay=delay)
+                        self.logger.info(f"Clicked on element at pixel coordinates: ({value[0]}, {value[1]})")
+                    else:
+                        await selector.click(timeout=2500)
+                        self.logger.info(f"Clicked on element: {element_str}")
+            elif action_name == "HOVER" and selector:
 
-            if selector == "pixel_coordinates":
-                delay = random.randint(50, 150)
-                await self.page.mouse.hover(round(target_coordinates["x"]), round(target_coordinates["y"]), delay=delay)
+                if selector == "pixel_coordinates":
+                    delay = random.randint(50, 150)
+                    await self.page.mouse.hover(round(target_coordinates["x"]), round(target_coordinates["y"]), delay=delay)
+                else:
+                    await selector.hover(timeout=2000)
+                    self.logger.info(f"Hovered over element: {element_str}")
+
+            elif action_name == "TYPE" and selector:
+
+                if selector == "pixel_coordinates":
+                    delay = random.randint(50, 150)
+                    await self.page.mouse.click(round(target_coordinates["x"]), round(target_coordinates["y"]), delay=delay)
+
+                    await self.page.keyboard.press("Control+A")
+                    await self.page.keyboard.press("Backspace")
+                    # value = stringfy_value(action['fill_text'])
+                    await self.page.keyboard.type(value)
+                else:
+                    await selector.fill(value)
+                    self.logger.info(f"Typed '{value}' into element: {element_str}")
+
+            elif action_name == "SCROLL UP":
+                await page.evaluate(f"window.scrollBy(0, -{self.config['browser']['viewport']['height'] // 2});")
+                self.logger.info("Scrolled up")
+            elif action_name == "SCROLL DOWN":
+                await page.evaluate(f"window.scrollBy(0, {self.config['browser']['viewport']['height'] // 2});")
+                self.logger.info("Scrolled down")
+            elif action_name == "PRESS HOME":
+                await page.keyboard.press('Home')
+                self.logger.info("Pressed Home key")
+            elif action_name == "PRESS END":
+                await page.keyboard.press('End')
+                self.logger.info("Pressed End key")
+            elif action_name == "PRESS PAGEUP":
+                await page.keyboard.press('PageUp')
+                self.logger.info("Pressed PageUp key")
+            elif action_name == "PRESS PAGEDOWN":
+                await page.keyboard.press('PageDown')
+                self.logger.info("Pressed PageDown key")
+            elif action_name == "NEW TAB":
+                new_page = await self.session_control['context'].new_page()
+                self.session_control['active_page'] = new_page  # TODO: why was this not here originally?
+                # self.session_control['pages'].append(new_page)
+                self.logger.info("Opened a new tab")
+            elif action_name == "CLOSE TAB":
+                await page.close()
+                self.logger.info("Closed the current tab")
+            elif action_name == "GO BACK":
+                await page.go_back()
+                self.logger.info("Navigated back")
+            elif action_name == "GO FORWARD":
+                await page.go_forward()
+                self.logger.info("Navigated forward")
+            elif action_name == "GOTO" and value:
+                # Normalize to absolute URL if relative
+                try:
+                    if not re.match(r"^[a-zA-Z]+://", str(value)):
+                        from urllib.parse import urlparse
+                        cur = urlparse(page.url)
+                        origin = f"{cur.scheme}://{cur.netloc}" if cur.scheme and cur.netloc else ""
+                        value = origin + str(value)
+                except Exception:
+                    self.logger.warning("Failed to parse current URL for GOTO normalization: "+ str(page.url))
+                await page.goto(value, wait_until="domcontentloaded")
+                self.logger.info(f"Navigated to {value}")
+            elif action_name == "PRESS ENTER" and selector:
+                if selector == "pixel_coordinates":
+                    delay = random.randint(50, 150)
+                    await self.page.mouse.click(round(target_coordinates["x"]), round(target_coordinates["y"]), delay=delay)
+                await selector.press('Enter')
+                self.logger.info(f"Pressed Enter on element: {element_str}")
+            elif action_name == "PRESS ENTER":
+                await page.keyboard.press('Enter')
+                self.logger.info(f"Pressed Enter on element: {element_str}")
+            elif action_name == "SELECT" and selector:
+                await select_option(selector, value)
+                self.logger.info(f"Selected option '{value}' from element: {element_str}")
+            elif action_name == "TERMINATE":
+                self.complete_flag = True
+                self.logger.info("Task has been marked as complete. Terminating...")
+            elif action_name in ["NONE"]:
+                self.logger.info("No action necessary at this stage. Skipped")
+            elif action_name in ["SAY"]:
+                self.logger.info(f"Say {value} to the user")
+            elif action_name in ["MEMORIZE"]:
+                self.logger.info(f"Keep {value} to the action history.")
             else:
-                await selector.hover(timeout=2000)
-                self.logger.info(f"Hovered over element: {element_str}")
-
-        elif action_name == "TYPE" and selector:
-
-            if selector == "pixel_coordinates":
-                delay = random.randint(50, 150)
-                await self.page.mouse.click(round(target_coordinates["x"]), round(target_coordinates["y"]), delay=delay)
-
-                await self.page.keyboard.press("Control+A")
-                await self.page.keyboard.press("Backspace")
-                # value = stringfy_value(action['fill_text'])
-                await self.page.keyboard.type(value)
+                raise NotImplementedError(f"Unsupported or improperly specified action: {action_name}")
+            if action_name in self.no_element_op and target_element is None:
+                new_action = action_name
             else:
-                await selector.fill(value)
-                self.logger.info(f"Typed '{value}' into element: {element_str}")
+                if selector == "pixel_coordinates":
+                    new_action = element_repr + " -> " + action_name
+                else:
+                    #new_action = "[" + target_element['tag_with_role'] + "]" + " "
+                    new_action = ""
+                    new_action += target_element.get('description', None) + " -> " + action_name if target_element else str(value) + action_name
+            if action_name in self.with_value_op:
+                new_action += ": " + value
 
-        elif action_name == "SCROLL UP":
-            await page.evaluate(f"window.scrollBy(0, -{self.config['browser']['viewport']['height'] // 2});")
-            self.logger.info("Scrolled up")
-        elif action_name == "SCROLL DOWN":
-            await page.evaluate(f"window.scrollBy(0, {self.config['browser']['viewport']['height'] // 2});")
-            self.logger.info("Scrolled down")
-        elif action_name == "PRESS HOME":
-            await page.keyboard.press('Home')
-            self.logger.info("Pressed Home key")
-        elif action_name == "PRESS END":
-            await page.keyboard.press('End')
-            self.logger.info("Pressed End key")
-        elif action_name == "PRESS PAGEUP":
-            await page.keyboard.press('PageUp')
-            self.logger.info("Pressed PageUp key")
-        elif action_name == "PRESS PAGEDOWN":
-            await page.keyboard.press('PageDown')
-            self.logger.info("Pressed PageDown key")
-        elif action_name == "NEW TAB":
-            new_page = await self.session_control['context'].new_page()
-            self.session_control['active_page'] = new_page  # TODO: why was this not here originally?
-            # self.session_control['pages'].append(new_page)
-            self.logger.info("Opened a new tab")
-        elif action_name == "CLOSE TAB":
-            await page.close()
-            self.logger.info("Closed the current tab")
-        elif action_name == "GO BACK":
-            await page.go_back()
-            self.logger.info("Navigated back")
-        elif action_name == "GO FORWARD":
-            await page.go_forward()
-            self.logger.info("Navigated forward")
-        elif action_name == "GOTO" and value:
-            # Normalize to absolute URL if relative
-            try:
-                if not re.match(r"^[a-zA-Z]+://", str(value)):
-                    from urllib.parse import urlparse
-                    cur = urlparse(page.url)
-                    origin = f"{cur.scheme}://{cur.netloc}" if cur.scheme and cur.netloc else ""
-                    value = origin + str(value)
-            except Exception:
-                self.logger.warning("Failed to parse current URL for GOTO normalization: "+ str(page.url))
-            await page.goto(value, wait_until="domcontentloaded")
-            self.logger.info(f"Navigated to {value}")
-        elif action_name == "PRESS ENTER" and selector:
-            if selector == "pixel_coordinates":
-                delay = random.randint(50, 150)
-                await self.page.mouse.click(round(target_coordinates["x"]), round(target_coordinates["y"]), delay=delay)
-            await selector.press('Enter')
-            self.logger.info(f"Pressed Enter on element: {element_str}")
-        elif action_name == "PRESS ENTER":
-            await page.keyboard.press('Enter')
-            self.logger.info(f"Pressed Enter on element: {element_str}")
-        elif action_name == "SELECT" and selector:
-            await select_option(selector, value)
-            self.logger.info(f"Selected option '{value}' from element: {element_str}")
-        elif action_name == "TERMINATE":
-            self.complete_flag = True
-            self.logger.info("Task has been marked as complete. Terminating...")
-        elif action_name in ["NONE"]:
-            self.logger.info("No action necessary at this stage. Skipped")
-        elif action_name in ["SAY"]:
-            self.logger.info(f"Say {value} to the user")
-        elif action_name in ["MEMORIZE"]:
-            self.logger.info(f"Keep {value} to the action history.")
-        else:
-            raise NotImplementedError(f"Unsupported or improperly specified action: {action_name}")
-        if action_name in self.no_element_op and target_element is None:
-            new_action = action_name
-        else:
-            if selector == "pixel_coordinates":
-                new_action = element_repr + " -> " + action_name
-            else:
-                #new_action = "[" + target_element['tag_with_role'] + "]" + " "
-                new_action = ""
-                new_action += target_element.get('description', None) + " -> " + action_name if target_element else str(value) + action_name
-        if action_name in self.with_value_op:
-            new_action += ": " + value
-
-        await self.sink.write({
-            "event" : "action",
-            "details": {
+            page_url_after = self._safe_page_url()
+            action_details: Dict[str, Any] = {
                 "element": f"{repr(target_element['description'])} {repr(selector)}" if target_element else None,
                 "action": action_name,
                 "value": value,
                 "reason": reason,
                 "worker_id": self.worker_id,
-                "timestamp": time.time()
+                "timestamp": time.time(),
             }
-        })    
-        # self.dev_logger.info(new_action)
-        # Update repeat guard state and append action for runner parity
-        #try:
-        self._last_url = self.page.url
-        #except Exception:
-        #    pass
-        self._last_target_key = _target_key
-        # Runner path calls perform_action directly; ensure actions are recorded
-        #try:
-        self.taken_actions.append(new_action)
-        #except Exception:
-        #    pass
-        return new_action
+            if step_info:
+                step_record = step_info.get("record", {})
+                action_details.update(
+                    {
+                        "step": step_record.get("step"),
+                        "page_url_before": step_record.get("page_url_before"),
+                        "page_url_after": page_url_after,
+                        "manifest_available": step_record.get("manifest_available"),
+                        "manifest_used": step_record.get("manifest_used"),
+                        "macro_used": step_record.get("macro_used"),
+                        "screenshot": step_record.get("screenshot"),
+                    }
+                )
+            await self.sink.write({"event": "action", "details": action_details})
+            # self.dev_logger.info(new_action)
+            # Update repeat guard state and append action for runner parity
+            #try:
+            self._last_url = self.page.url
+            #except Exception:
+            #    pass
+            self._last_target_key = _target_key
+            # Runner path calls perform_action directly; ensure actions are recorded
+            #try:
+            self.taken_actions.append(new_action)
+            #except Exception:
+            #    pass
+            return new_action
+        except BaseException as exc:  # noqa: BLE001
+            action_error = exc
+            raise
+        finally:
+            if step_info:
+                self._finalize_step_record(
+                    status="failed" if action_error else "completed",
+                    post_url=self._safe_page_url(),
+                    error=action_error,
+                )
 
     async def predict(self):
 
@@ -1596,6 +1797,12 @@ To be successful, it is important to follow the following rules:
             self.logger.info(f"metrics: scan_ms={scan_ms} llm_ms={llm_ms_total} macro_used={step_metrics_entry['macro_used']} num_candidates={num_choices}")
 
         step_metrics_entry["manifest_used"] = getattr(self, "_manifest_step_used", False)
+        self._stage_step_record(
+            prediction=prediction,
+            step_metrics=step_metrics_entry,
+            screenshot_path=screenshot_path,
+            llm_output=(prediction.get("action_grounding") if isinstance(prediction, dict) else None) or output,
+        )
         self._step_metrics.append(step_metrics_entry)
 
         self.predictions.append(prediction)
@@ -1689,7 +1896,7 @@ To be successful, it is important to follow the following rules:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         try:
             await self.page.screenshot(path=path)
-            if self.config['agent']['draw_axes']:
+            if self.config['agent']['draw_axes'] and Image is not None:
                 # open up that screenshot and add axis labels 0-1 on it
                 with Image.open(path) as img:
                     draw = ImageDraw.Draw(img)
@@ -1705,6 +1912,8 @@ To be successful, it is important to follow the following rules:
                         # make the font bigger
                         draw.text((5, y), f"{i/10:.1f}", fill="red")
                     img.save(path)
+            elif self.config['agent']['draw_axes'] and Image is None:
+                self.logger.warning("draw_axes enabled but Pillow (PIL) is not installed; skipping axis overlay.")
                         
         except Exception as e:
             self.logger.warning(f"Failed to take screenshot: {e}")
