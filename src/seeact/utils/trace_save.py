@@ -79,7 +79,7 @@ def build_trace_for_task(
 
         screenshot_path = None
         if screenshot:
-            screenshot_path = f"{run_prefix}/tasks/{task_dir.name}{screenshot}"
+            screenshot_path = f"{run_prefix}/tasks/{task_dir.name}/{screenshot}"
 
         items.append(
             {
