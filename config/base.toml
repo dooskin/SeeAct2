@@ -22,7 +22,7 @@ dev_mode = false
 include_dom_in_choices = false
 
 [agent]
-input_info = [""]
+input_info = ["screenshot"]
 max_auto_op = 50
 max_continuous_no_op = 5
 highlight = false

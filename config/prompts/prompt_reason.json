@@ -18,7 +18,7 @@
         },
         {
             "role": "user",
-            "parts": ["referring_description_prefix", "choice_prefix", "{choices}", "screenshot_prefix", "{image}", "final_question"],
+            "parts": ["referring_description_prefix", "choice_prefix", "{choices}", "final_question"],
             "join": "\n"
         }
     ]
