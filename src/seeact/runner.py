@@ -25,6 +25,7 @@ from seeact.execution import execute_task
 from seeact.recommendations.gating import gate_recommendations
 from seeact.settings import load_settings, SettingsLoadError
 from seeact.utils.manifest_loader import load_manifest as load_manifest_from_dir, require_manifest_dir
+from seeact.utils.trace_save import save_trace
 
 # configured more in main()
 logger = logging.getLogger(__name__)  # runner module logger
@@ -547,6 +548,8 @@ async def run_pool(settings: Dict[str, Any], args: argparse.Namespace, logger: l
     ]
     await asyncio.gather(*workers)
     await sink.write({"event": "run_complete", "run_id": run_id, "ts": time.time()})
+    
+    save_trace(settings['basic']['log_path'], args.trace_out)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -559,6 +562,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--personas", help="Path to personas YAML for weighted sampling")
     parser.add_argument("--manifest-dir", help="Path to directory containing site manifests (.json)")
     parser.add_argument("--verbose", action="store_true", help="Print concise progress events to stdout")
+    parser.add_argument("--trace_out", default='trace_out.json', help="File to save the output trace in")
     return parser
 
 
@@ -581,8 +585,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     save_root = Path(settings["basic"]["save_file_dir"]).resolve()
     save_root.mkdir(parents=True, exist_ok=True)
     main_path = str((save_root / f"logs_{run_uuid}").resolve())
+    settings['basic']['log_path'] = main_path
     # add uuid to main_path to avoid overwriting
-    
     os.makedirs(main_path, exist_ok=True)
 
     #  Add a file handler for the runner logger
