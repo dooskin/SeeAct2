@@ -25,44 +25,48 @@ async def execute_task(agent, task: Dict[str, Any], max_steps: int) -> TaskResul
     website = task.get("website") or task.get("confirmed_website") or task.get("url")
     confirmed_task = task.get("confirmed_task") or task.get("task")
 
-    await agent.start(website=website)
-    if confirmed_task:
-        agent.change_task(confirmed_task, clear_history=True)
+    try:
+        await agent.start(website=website)
+        if confirmed_task:
+            agent.change_task(confirmed_task, clear_history=True)
 
-    steps = 0
-    while not agent.complete_flag and steps < max_steps:
-        prediction = await agent.predict()
-        if not prediction:
-            raise TaskExecutionRetryError(task_id, "Agent failed to predict next action.", context=__name__) # possibly retry task
+        steps = 0
+        while not agent.complete_flag and steps < max_steps:
+            prediction = await agent.predict()
+            if not prediction:
+                raise TaskExecutionRetryError(task_id, "Agent failed to predict next action.", context=__name__) # possibly retry task
+            
+            try:
+                await agent.perform_action(
+                    target_element=prediction.get("element"),
+                    action_name=prediction.get("action"),
+                    value=prediction.get("value"),
+                    target_coordinates=prediction.get("target_coordinates"),
+                    element_repr=None,
+                    reason=prediction.get("reason"),
+                )
+                # sleep to wait for page load if needed
+                try:
+                    await agent.page.wait_for_load_state('networkidle', timeout=200)
+                except playwright.async_api.TimeoutError:
+                    # hopefully itll be ok
+                    print("Timeout waiting for networkidle, continuing anyway.")
+                    pass
+                try:
+                    await agent.restore_page_agent_state()
+                except Exception as e:
+                    agent.logger.warning(f"Failed to restore page agent state: {e}")
+                #await agent.page.wait_for_load_state('domcontentloaded', timeout=2000)
+
+            except playwright.async_api.TimeoutError as e:
+                raise TaskExecutionRetryError(task_id, 
+                                            "Action timed out: " + str(prediction.get("action"))  + " at element " + str(prediction.get("element")), 
+                                            context=__name__)
+            steps += 1
+    finally:
+        await agent.stop()
         
-        try:
-            await agent.perform_action(
-                target_element=prediction.get("element"),
-                action_name=prediction.get("action"),
-                value=prediction.get("value"),
-                target_coordinates=prediction.get("target_coordinates"),
-                element_repr=None,
-                reason=prediction.get("reason"),
-            )
-            # sleep to wait for page load if needed
-            try:
-                await agent.page.wait_for_load_state('networkidle', timeout=200)
-            except playwright.async_api.TimeoutError:
-                # hopefully itll be ok
-                print("Timeout waiting for networkidle, continuing anyway.")
-                pass
-            try:
-                await agent.restore_page_agent_state()
-            except Exception as e:
-                agent.logger.warning(f"Failed to restore page agent state: {e}")
-            #await agent.page.wait_for_load_state('domcontentloaded', timeout=2000)
-
-        except playwright.async_api.TimeoutError as e:
-            raise TaskExecutionRetryError(task_id, 
-                                          "Action timed out: " + str(prediction.get("action"))  + " at element " + str(prediction.get("element")), 
-                                          context=__name__)
-        steps += 1
-    await agent.stop()
+    #await agent.stop()
     t1 = time.time()
     result_payload = getattr(agent, "final_result", None)
     step_metrics = getattr(agent, "_step_metrics", None)

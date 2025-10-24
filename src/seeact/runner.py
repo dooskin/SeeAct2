@@ -590,7 +590,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     os.makedirs(main_path, exist_ok=True)
 
     #  Add a file handler for the runner logger
-    f_handler = logging.FileHandler(f'{main_path}/runner.log')
+    f_handler = logging.FileHandler(f'{main_path}/runner.log', encoding='utf-8')
     f_handler.setLevel(logging.DEBUG)
     f_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     f_handler.setFormatter(f_format)
@@ -601,6 +601,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # Include logger name in the console output
     c_format = logging.Formatter('runner.py: %(asctime)s - %(name)s - %(levelname)s - %(message)s')
     c_handler.setFormatter(c_format)
+    c_handler.stream.reconfigure(encoding='utf-8')
     logger.addHandler(c_handler)  
     logger.info("Starting SeeAct runner with uuid %s", run_uuid)
     logger.info(f"Saving run files and logs to {main_path}")

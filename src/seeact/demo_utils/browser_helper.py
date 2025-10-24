@@ -361,6 +361,103 @@ async def get_element_data(element, tag_name,viewport_size,seen_elements=[]):
         # print(e)
         return None
 
+async def get_interactive_elements_js(page, viewport_size):
+    js = """
+    () => {
+      const selectors = [
+        'a', 'button', 'input', 'select', 'textarea',
+        '[role="slider"]', '[role="option"]',
+        '[role="button"]', '[role="link"]', '[role="menuitem"]',
+        '[role="tab"]', '[role="checkbox"]', '[role="radio"]',
+        '[onclick]', '[tabindex]'
+      ];
+
+      const seen = new Set();
+      const results = [];
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+
+      function buildXPath(el) {
+        if (el.id) return `//*[@id="${el.id}"]`;
+        const parts = [];
+        while (el && el.nodeType === Node.ELEMENT_NODE) {
+          let index = 1;
+          let sibling = el.previousSibling;
+          while (sibling) {
+            if (sibling.nodeType === Node.ELEMENT_NODE && sibling.nodeName === el.nodeName) {
+              index++;
+            }
+            sibling = sibling.previousSibling;
+          }
+          const tagName = el.nodeName.toLowerCase();
+          const part = `${tagName}[${index}]`;
+          parts.unshift(part);
+          el = el.parentNode;
+        }
+        return '/' + parts.join('/');
+      }
+
+      function cleanHTML(html) {
+        if (!html) return null;
+        html = html.replace(/\\s+/g, ' ').trim();
+        return html.length > 600 ? html.slice(0, 600) + '...' : html;
+      }
+
+      function addElement(el, selOverride=null) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width <= 4 || rect.height <= 4) return;
+        if (rect.x < 0 || rect.y < 0 || rect.bottom > vh || rect.right > vw) return;
+
+        const description = el.innerText?.trim() || el.getAttribute('aria-label') || el.getAttribute('alt') || '';
+        if (!description) return;
+
+        const cx = rect.x + rect.width / 2;
+        const cy = rect.y + rect.height / 2;
+        const normX = +(cx / vw).toFixed(3);
+        const normY = +(cy / vh).toFixed(3);
+        const key = `${normX}-${normY}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+
+        const role = el.getAttribute('role');
+        const type = el.getAttribute('type');
+        const tag = el.tagName.toLowerCase();
+        let tag_head = tag;
+        if (role) tag_head += ` role="${role}"`;
+        if (type) tag_head += ` type="${type}"`;
+
+        results.push({
+          center_point: [normX, normY],
+          description,
+          tag_with_role: tag_head,
+          box_raw: [rect.x, rect.y, rect.width, rect.height],
+          box: [rect.x, rect.y, rect.x + rect.width, rect.y + rect.height],
+          selector: selOverride || buildXPath(el),
+          tag,
+          outer_html: cleanHTML(el.outerHTML)
+        });
+      }
+
+      // Primary pass
+      for (const sel of selectors) {
+        document.querySelectorAll(sel).forEach(el => addElement(el));
+      }
+
+      // Heuristic: clickable ancestors of images
+      const imgs = Array.from(document.querySelectorAll('img, picture, figure')).slice(0, 200);
+      for (const img of imgs) {
+        const anchor = img.closest('a,[role="button"],[role="link"],[onclick]');
+        if (!anchor) continue;
+        addElement(anchor, 'ancestor-of-image');
+      }
+
+      return results;
+    }
+    """
+    elements = await page.evaluate(js)
+    return elements
+
+
 
 async def get_interactive_elements_with_playwright(page, viewport_size=None):
     # Broaden initial pass to include common ARIA widgets that appear as non-form tags

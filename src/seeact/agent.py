@@ -70,7 +70,8 @@ import time
 from .data_utils.format_prompt_utils import get_index_from_option_name, generate_new_query_prompt, \
     generate_new_referring_prompt, format_options, generate_option_name
 from .demo_utils.browser_helper import normal_launch_async, normal_new_context_async, \
-    get_interactive_elements_with_playwright, select_option, saveconfig, auto_dismiss_overlays, register_overlay_hint
+    get_interactive_elements_with_playwright, select_option, saveconfig, auto_dismiss_overlays, register_overlay_hint, \
+    get_interactive_elements_js
 from .demo_utils.crawler_helper import get_random_link
 from .demo_utils.format_prompt import format_choices, postprocess_action_lmm, postprocess_action_lmm_pixel
 try:
@@ -124,6 +125,7 @@ class SeeActAgent:
                  worker_id: Optional[int] = None,
                  sink : JsonlMetricsSink = None,
                  prompt_file: str = "./config/prompts/prompt_standard.json",
+                 playwright_search = False
                  ):
 
         try:
@@ -340,6 +342,9 @@ class SeeActAgent:
             #
             self.logger.info("Persisting prompt context across steps")
             self._prompt_context = []  # (role, content) tuples
+        
+        # Experimental: Using a javascript program to parse the interactive elements instead of playwright
+        self.playwright_search = playwright_search
             
     @staticmethod
     def _categorize_url(url: str) -> Tuple[bool, bool]:
@@ -852,7 +857,6 @@ class SeeActAgent:
             prompt = [sys_msg] + prompt_context + prompt[1:]
             
             self._prompt_context.append(("user", choices))  # add current choices to context
-            print(self._prompt_context)
         return prompt
     
     def _generate_prompts_from_json(self, choices):
@@ -1387,7 +1391,9 @@ To be successful, it is important to follow the following rules:
             _url_now = self.page.url
         except Exception:
             _url_now = ""
-        _target_key = f"{action_name}|{target_element}".strip()
+        _target_key = f"{action_name}|".strip()
+        if target_element:
+            _target_key+= f"{target_element.get('description')}{target_element.get('selector')}".strip()
         if getattr(self, "_last_url", None) is None:
             self._last_url = ""
         if getattr(self, "_last_target_key", None) is None:
@@ -1465,7 +1471,10 @@ To be successful, it is important to follow the following rules:
                         await self.page.mouse.click(round(value[0]), round(value[1]), delay=delay)
                         self.logger.info(f"Clicked on element at pixel coordinates: ({value[0]}, {value[1]})")
                     else:
-                        await selector.click(timeout=2500)
+                        if isinstance(selector, str):
+                            await page.locator(f'xpath={selector}').click()
+                        else:
+                            await selector.click(timeout=2500)
                         self.logger.info(f"Clicked on element: {element_str}")
             elif action_name == "HOVER" and selector:
 
@@ -1473,7 +1482,10 @@ To be successful, it is important to follow the following rules:
                     delay = random.randint(50, 150)
                     await self.page.mouse.hover(round(target_coordinates["x"]), round(target_coordinates["y"]), delay=delay)
                 else:
-                    await selector.hover(timeout=2000)
+                    if isinstance(selector, str):
+                        await page.locator(f'xpath={selector}').hover()
+                    else:
+                        await selector.hover(timeout=2000)
                     self.logger.info(f"Hovered over element: {element_str}")
 
             elif action_name == "TYPE" and selector:
@@ -1487,7 +1499,12 @@ To be successful, it is important to follow the following rules:
                     # value = stringfy_value(action['fill_text'])
                     await self.page.keyboard.type(value)
                 else:
-                    await selector.fill(value)
+                    if isinstance(selector, str):
+                        locator = page.locator(f'xpath={selector}')
+                        await locator.wait_for(state='visible', timeout=2500)
+                        await locator.fill(value)
+                    else:
+                        await selector.fill(value)
                     self.logger.info(f"Typed '{value}' into element: {element_str}")
 
             elif action_name == "SCROLL UP":
@@ -1666,9 +1683,13 @@ To be successful, it is important to follow the following rules:
 
         
         scan_t0 = time.time()
-        elements = await get_interactive_elements_with_playwright(
-            self.page, self.config['browser']['viewport']
-        )
+        
+        if self.playwright_search:
+            elements = await get_interactive_elements_with_playwright(
+                self.page, self.config['browser']['viewport']
+            )
+        else:
+            elements = await get_interactive_elements_js(self.page, self.config['browser']['viewport'])
         scan_ms = int((time.time() - scan_t0) * 1000)
 
         elements = sorted(elements, key=lambda el: (
@@ -1761,7 +1782,7 @@ To be successful, it is important to follow the following rules:
 
             if not output:
                 # LLM timed out → use fallback macro for this step
-                raise TaskExecutionRetryError("LLM response was empty or timed out")
+                raise TaskExecutionRetryError(task_id=self.tasks[-1].get('task_id', 'task id not found'), message="LLM response was empty or timed out")
 
             pred_element_label, pred_action, pred_value, pred_reason = postprocess_action_lmm(output)
             local_idx = get_index_from_option_name(pred_element_label) if len(pred_element_label) in [1, 2] else None

@@ -7,7 +7,6 @@ import json
 import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
-
 REASON_RE = re.compile(r"REASON:\s*(.*?)(?:\n\s*ELEMENT:|\Z)", re.S)
 
 
