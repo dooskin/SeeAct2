@@ -1,6 +1,8 @@
 <h1 align="center">SeeAct Platform</h1>
 
 SeeAct is an engineering-focused platform for building, running, and measuring autonomous web agents on live sites. This repo contains the runnable agent, sandboxed experimentation harness, and the tooling to calibrate, verify, and report outcomes for product-grade use.
+## Disclaimer
+This codingbase is undergoing surgery. The primary function is running the runner.py script. Calibration is not finished, and generate_prompts is deprecated. 
 
 ## What's In Scope
 
@@ -14,8 +16,10 @@ SeeAct is an engineering-focused platform for building, running, and measuring a
 
 ## Repository Structure
 
-- `src/seeact/seeact.py`: Main entry point (demo/auto modes).
+- `src/seeact/runner.py`: Main entry point.
+- `src/seeact/agent.py`: Agent spun up per task
 - `config/base.toml` + `config/profiles/*.toml`: Layered settings for demo/auto/browserbase profiles.
+- `config/prompts`: recommend to use prompt_reason in config toml. This defines the structure of the prompt. First, there is a system prompt specified (stitch together). Some key tags are {image} and {task_description}, which are state-dependent. The 'user' prompt is interweaved with an 'assisant' prompt at runtime.
 - `src/{seeact/demo_utils,seeact/data_utils,offline_experiments}/`: Runtime helpers and experiment scripts.
   - `src/offline_experiments/` [DEPRECATED]: legacy scripts retained for reference only; not used in the current E2E flows.
 - `data/`: Sample tasks and example artifacts (large files should not be committed).
@@ -37,10 +41,8 @@ For a deeper guide on code structure, testing, and contribution workflow, see `C
 
 1) Create environment (choose one; do not stack both)
 ```bash
-# Option A: Conda (recommended)
-conda create -n seeact python=3.11 && conda activate seeact
 
-# Option B: venv
+# Recommended: venv
 python -m venv .venv && source .venv/bin/activate
 python -m pip install --upgrade pip
 ```
@@ -63,18 +65,18 @@ Change model quickly (OpenAI/fine‑tunes)
 - Edit `[openai].model` in a config file to use a different or fine‑tuned model.
 - Example: apply the `openai_finetune` profile (pre‑configured placeholder for a fine‑tuned model), then run:
 ```bash
-python -m seeact.runner -c config/base.toml --profile openai_finetune \
-  --tasks data/online_tasks/sample_tasks.json \
+python -m seeact.runner -c config/base.toml \
+--tasks data/online_tasks/sample_tasks.json \
   --concurrency 6 --verbose
 ```
-- Tip: for text‑only models (no vision), set `[agent].grounding_strategy = "text_choice"` in the TOML.
+- Tip: Look at different config toml files for different settings
 
-4) Run demo mode (interactive)
+4) Run demo mode (interactive) (Out of date)
 ```bash
 python -m seeact.seeact --profile demo
 ```
 
-5) Run auto mode (batch)
+5) Run auto mode (batch) (Out of date)
 ```bash
 python -m seeact.seeact
 ```
